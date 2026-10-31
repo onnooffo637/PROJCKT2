@@ -31,6 +31,7 @@ from aether_human_core.psychology_engine.social_influence import (
 from aether_human_core.psychology_engine.micro_traits import micro_traits_engine
 from aether_human_core.psychology_engine.circadian_rhythm import circadian_engine
 from aether_human_core.psychology_engine.dialect_chameleon import dialect_chameleon
+from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
 from aether_human_core.cognitive_engine.context_linker import context_linker
 from aether_human_core.cognitive_engine.inner_monologue import inner_monologue_engine, MonologueDecision
 from aether_human_core.cognitive_engine.cognitive_cache import cognitive_cache
@@ -42,6 +43,11 @@ class OrchestratedResponse(BaseModel):
     decision_type: str = "REPLY"  # REPLY, GHOST_SEEN, REACT_ONLY, IGNORE
     raw_response_text: str = ""
     reaction_emoji: Optional[str] = None
+    affinity_notification: Optional[str] = None
+    affinity_delta: float = 0.0
+    current_affinity: float = 0.0
+    relationship_tier: str = ""
+    user_role: str = ""
     is_shy: bool = False
     is_cold_dismissal: bool = False
     should_send_voice: bool = False
@@ -168,15 +174,63 @@ class CognitiveOrchestrator:
                 tier=RelationshipTier(user_record.relationship_tier),
             )
 
-            # 3. Dignity Check: Is sender demeaning or insulting?
+            # 3. Dignity & Toxicity Check: Is sender insulting, cursing, or demeaning?
+            is_profane = anti_toxicity.contains_profanity(message_text)
             dignity_defense = micro_traits_engine.evaluate_dignity_defense(user_vector, message_text)
-            if dignity_defense:
-                endocrine_engine.apply_event_shock("INSULT_OR_DISRESPECT", intensity=1.5)
-                await user_repo.update_affinity_scores(sender_id, delta_affinity=-15.0, delta_respect=-10.0)
+            is_insult = is_profane or (dignity_defense is not None)
+
+            if is_insult:
+                endocrine_engine.apply_event_shock("INSULT_OR_DISRESPECT", intensity=2.0)
+                da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
+                    user_vector, action_type="INSULT", emotional_intensity=1.5
+                )
+                updated_user = await user_repo.update_affinity_scores(
+                    sender_id, delta_affinity=da, delta_trust=dt, delta_romantic=dr, delta_respect=dp
+                )
+
+                # If affinity drops below -30.0 and user is not admin, demote to VILLAIN
+                if updated_user.affinity_score <= -30.0 and updated_user.role not in ("SUPER_ADMIN", "ADMIN"):
+                    await user_repo.set_user_role(sender_id, "VILLAIN")
+                    updated_user.relationship_tier = "ANTAGONIST"
+
+                tier_ar = RelationshipTier.get_display_name(
+                    updated_user.relationship_tier, role=updated_user.role
+                )
+
+                # Select response
+                if user_vector.tier in (RelationshipTier.ANTAGONIST, RelationshipTier.VILLAIN) or user_record.role == "VILLAIN":
+                    villain_retorts = [
+                        "هو ده طبع الأشرار اللي زيك عموماً.. وفر شتيمتك مش هنزل لمستواك!",
+                        "عارف إنك شرير ومش سالك، وكلامك ده ميحركش شعرة مني يا غالي!",
+                        "كلامك بيعبر عن أصلك كشرير.. كبر دماغك وشوفلك لعبة تانية بعيد عني!",
+                    ]
+                    raw_reply = random.choice(villain_retorts)
+                elif dignity_defense:
+                    raw_reply = dignity_defense
+                else:
+                    raw_reply = anti_toxicity.get_dignified_response_to_insult("egyptian")
+
+                # Separate notification
+                filled = max(0, min(10, int(abs(updated_user.affinity_score) / 10)))
+                bar_str = "▓" * filled + "░" * (10 - filled)
+                sign = "-" if updated_user.affinity_score < 0 else "+"
+                affinity_notification = (
+                    f"⚠️ <b>[ إشعار تراجع التفضيل والسمعة ]</b>\n"
+                    f"📉 <b>انخفض رصيدك عند عمر:</b> <code>{da:.1f}</code> 💔\n"
+                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
+                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                )
+
                 return OrchestratedResponse(
                     decision_type="REPLY",
-                    raw_response_text=dignity_defense,
-                    inner_monologue_text="شتمني ومش هقبل أي إهانة لكرامتي.",
+                    raw_response_text=raw_reply,
+                    reaction_emoji="💔",
+                    affinity_notification=affinity_notification,
+                    affinity_delta=da,
+                    current_affinity=updated_user.affinity_score,
+                    relationship_tier=updated_user.relationship_tier,
+                    user_role=updated_user.role,
+                    inner_monologue_text="شتمني ومش هقبل أي إهانة لكرامتي ورصيده نزل بالسالب.",
                 )
 
             # 4. Check for Social Constraint Directive (e.g. 'Don't talk to girls')
@@ -374,39 +428,40 @@ class CognitiveOrchestrator:
                 raw_reply = f"{raw_reply} {shy_emoji}"
 
             # 12. Evaluate affinity modulation & store memory
-            da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
-                user_vector, action_type="KIND_SUPPORT" if hormones.oxytocin > 0.6 else "SHARED_HUMOR"
-            )
+            if user_record.role == "VILLAIN":
+                da = 0.2
+                dt = 0.1
+                dr = 0.0
+                dp = 0.0
+            else:
+                da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
+                    user_vector, action_type="KIND_SUPPORT" if hormones.oxytocin > 0.6 else "SHARED_HUMOR"
+                )
             updated_user = await user_repo.update_affinity_scores(
                 sender_id, delta_affinity=da, delta_trust=dt, delta_romantic=dr, delta_respect=dp
             )
 
-            # Flash update notification banner if affinity changed (Gamified Bonding XP)
-            is_owner = sender_id in settings.super_admin_ids_list
-            if not is_owner:
-                tier_ar = RelationshipTier.get_display_name(updated_user.relationship_tier)
-                filled = max(0, min(10, int(updated_user.affinity_score / 10))) if updated_user.affinity_score >= 0 else 0
-                bar_str = "▓" * filled + "░" * (10 - filled)
-                if da > 0.05:
-                    affinity_banner = (
-                        f"<blockquote>"
-                        f"✨ <b>[ 🔔 إشعار ارتقاء العلاقة والتفضيل ]</b>\n"
-                        f"📈 <b>تمت زيادة رصيدك عند عمر:</b> <b>+{da:.1f} 💖</b>\n"
-                        f"📊 <b>المستوى الحالي:</b> <b>{updated_user.affinity_score:.1f}/100</b> [<code>{bar_str}</code>]\n"
-                        f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
-                        f"</blockquote>\n\n"
-                    )
-                    raw_reply = f"{affinity_banner}{raw_reply}"
-                elif da < -0.05:
-                    affinity_banner = (
-                        f"<blockquote>"
-                        f"⚠️ <b>[ 🔔 إشعار تحديث التفضيل ]</b>\n"
-                        f"📉 <b>انخفض رصيدك عند عمر:</b> <b>{da:.1f} 💔</b>\n"
-                        f"📊 <b>المستوى الحالي:</b> <b>{updated_user.affinity_score:.1f}/100</b> [<code>{bar_str}</code>]\n"
-                        f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
-                        f"</blockquote>\n\n"
-                    )
-                    raw_reply = f"{affinity_banner}{raw_reply}"
+            # Separate system alert notification if affinity changed significantly (>= 1.5)
+            tier_ar = RelationshipTier.get_display_name(updated_user.relationship_tier, role=updated_user.role)
+            filled = max(0, min(10, int(abs(updated_user.affinity_score) / 10)))
+            bar_str = "▓" * filled + "░" * (10 - filled)
+            sign = "-" if updated_user.affinity_score < 0 else "+"
+
+            affinity_notification = None
+            if da >= 1.5:
+                affinity_notification = (
+                    f"🔔 <b>[ إشعار تحديث التفضيل والعلاقة ]</b>\n"
+                    f"📈 <b>تمت زيادة رصيدك عند عمر:</b> <code>+{da:.1f}</code> 💖\n"
+                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
+                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                )
+            elif da <= -1.5:
+                affinity_notification = (
+                    f"⚠️ <b>[ إشعار تراجع التفضيل والسمعة ]</b>\n"
+                    f"📉 <b>انخفض رصيدك عند عمر:</b> <code>{da:.1f}</code> 💔\n"
+                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
+                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                )
 
             # Store memory in vector store
             await vector_memory.store_memory(
@@ -430,6 +485,11 @@ class CognitiveOrchestrator:
                 decision_type="REPLY",
                 raw_response_text=raw_reply,
                 reaction_emoji=monologue.recommended_reaction_emoji,
+                affinity_notification=affinity_notification,
+                affinity_delta=da,
+                current_affinity=updated_user.affinity_score,
+                relationship_tier=updated_user.relationship_tier,
+                user_role=updated_user.role,
                 is_shy=is_shy,
                 inner_monologue_text=monologue.internal_thought_raw,
                 detected_dialect=detected_profile.code,

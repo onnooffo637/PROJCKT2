@@ -71,7 +71,14 @@ class PrivateDMHandler:
                 chat_id=sender_id, bursts=bursts, reply_to_msg_id=message_id
             )
 
-        # 6. Execute Loyalty Reporting if triggered by Pre-Cognitive Interceptor
+        # 6. Separate Bot Alert Notification for Affinity / Status Updates
+        if resp.affinity_notification:
+            await mtproto_manager.send_message(
+                chat_id=sender_id,
+                text=resp.affinity_notification,
+            )
+
+        # 7. Execute Loyalty Reporting if triggered by Pre-Cognitive Interceptor
         if resp.loyalty_partner_id and resp.loyalty_report_message:
             logger.info(
                 f"Dispatching Loyalty Report to Partner [{resp.loyalty_partner_id}]: '{resp.loyalty_report_message}'"

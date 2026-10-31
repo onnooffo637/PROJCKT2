@@ -102,6 +102,19 @@ class MediaEventHandler:
 
         logger.info(f"Detected explicit voice note request from [{sender_name}]: '{message_text}'")
 
+        # Villain / Antagonist rejection
+        async with db_manager.session() as session:
+            u_repo = UserRepository(session)
+            u_rec = await u_repo.get_by_telegram_id(sender_id)
+            if u_rec and (u_rec.role == "VILLAIN" or u_rec.affinity_score < 0):
+                bursts = human_typer.prepare_message_bursts(
+                    f"مش هبعت أي فويس لأشرار زيك يا {sender_name}! روح شوفلك شرور تانية تعملها بعيد عني! 🦹❌"
+                )
+                await mtproto_manager.dispatch_burst_messages(
+                    chat_id=chat_id, bursts=bursts, reply_to_msg_id=message_id
+                )
+                return True
+
         # 1. Run cognitive orchestrator to generate what Omar would say naturally
         resp = await cognitive_orchestrator.process_incoming_event(
             telegram_message_id=message_id,
@@ -172,6 +185,15 @@ class MediaEventHandler:
             respect_dominance=user_record.respect_dominance,
             tier=RelationshipTier(user_record.relationship_tier),
         )
+
+        if user_record.role == "VILLAIN" or user_record.affinity_score < 0:
+            bursts = human_typer.prepare_message_bursts(
+                f"سيلفي إيه يا شرير؟ عايز تحسدني ولا إيه؟ مفيش صور بتتبعت للأشرار والخصوم! 🦹❌"
+            )
+            await mtproto_manager.dispatch_burst_messages(
+                chat_id=chat_id, bursts=bursts, reply_to_msg_id=message_id
+            )
+            return True
 
         can_send, verbal_response = life_sim.evaluate_photo_request(user_vector, sender_name)
 

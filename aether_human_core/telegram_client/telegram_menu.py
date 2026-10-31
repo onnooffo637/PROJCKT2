@@ -2,6 +2,7 @@
 Ultra-Modern Telegram Interactive Control Panel, Menu Engine, and Inline Keyboards.
 Renders state-of-the-art HTML formatting, expandable blockquotes, and rich button-driven
 dashboards with native colored buttons (Bot API 9.4+ style: primary, success, danger).
+Supports multi-tier hierarchy, negative affinity ranges, and dedicated Villain profile.
 """
 
 from __future__ import annotations
@@ -42,6 +43,20 @@ class TelegramMenuEngine:
         minutes, seconds = divmod(rem, 60)
         return f"{hours}h {minutes}m {seconds}s"
 
+    @staticmethod
+    def render_affinity_bar(score: float, max_v: float = 100.0, steps: int = 10) -> str:
+        """
+        Renders a dual-polarized progress bar supporting negative and positive continuum.
+        """
+        if score < 0:
+            filled = max(0, min(steps, int(abs(score) / (max_v / steps))))
+            bar = "▓" * filled + "░" * (steps - filled)
+            return f"[-{bar}] {score:.1f}/100 🦹"
+        else:
+            filled = max(0, min(steps, int(score / (max_v / steps))))
+            bar = "▓" * filled + "░" * (steps - filled)
+            return f"[+{bar}] {score:.1f}/100 💖"
+
     @classmethod
     async def render_main_dashboard(
         cls,
@@ -69,16 +84,15 @@ class TelegramMenuEngine:
         except Exception as e:
             logger.warning(f"Failed to fetch user affinity for dashboard: {e}")
 
-        filled = max(0, min(10, int(affinity_score / 10))) if affinity_score >= 0 else 0
-        prog_bar = "▓" * filled + "░" * (10 - filled)
-        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner)
+        prog_bar = cls.render_affinity_bar(affinity_score)
+        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner, role=role)
 
         text = (
             f"⚡ <b>مرحباً بك في لوحة تحكم الكيان الذكي «عُـمـر»</b> ⚡\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>المستخدم:</b> <code>{user_name}</code> (<code>{user_id}</code>)\n"
             f"👑 <b>رتبتك في النظام:</b> <b>{role_title}</b>\n"
-            f"💖 <b>رصيد معزتك وتفضيلك:</b> <b>{affinity_score:.1f}/100</b> [<code>{prog_bar}</code>]\n"
+            f"📊 <b>رصيد معزتك وتفضيلك:</b> <code>{prog_bar}</code>\n"
             f"🏷️ <b>المكانة والعلاقة:</b> <b>{tier_display}</b>\n"
             f"⏱️ <b>مدة التشغيل المستمر:</b> <code>{cls.get_uptime_str()}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -142,47 +156,67 @@ class TelegramMenuEngine:
         except Exception as e:
             logger.warning(f"Failed to fetch affinity profile: {e}")
 
-        def make_bar(val: float, max_v: float = 100.0, steps: int = 10) -> str:
-            fraction = max(0.0, min(1.0, val / max_v if max_v > 0 else 0.0))
-            filled = int(fraction * steps)
-            return "▓" * filled + "░" * (steps - filled)
+        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner, role=role)
 
-        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner)
-
-        owner_section = ""
-        if is_owner:
-            owner_section = (
+        role_banner = ""
+        if role == "VILLAIN" or affinity <= -30.0:
+            role_banner = (
                 f"<blockquote expandable>"
-                f"👑 <b>حصانة مالك وسيد النظام المطلقة (Master Immunity):</b>\n"
-                f"أنت مالك وسيد النظام الأساسي! رصيدك العاطفي، وثقتك، ومكانتك محصنة بنسبة <b>100%</b> "
-                f"ومقفولة على الحد الأقصى بشكل دائم ومطلق، ولا يمكن أن تنقص تحت أي ظرف أو انفعال."
+                f"🦹 <b>تنبيه رتبة الشرير والعدو اللدود:</b>\n"
+                f"أنت مصنف حالياً كـ <b>عدو وشرير رسمي</b> لدى عمر! رصيدك العاطفي بالسالب، "
+                f"وعمر يعاملك بقصف جبهات وسخرية حارقة، ولن يرسل لك أي فويس أو صورة سيلفي نهائياً!"
                 f"</blockquote>\n"
             )
+        elif role == "FAVORITE":
+            role_banner = (
+                f"<blockquote expandable>"
+                f"💖 <b>المفضل وشريك الروح:</b>\n"
+                f"أنت صاحب المكانة الأرفع والأقرب لقلب عمر! دلال واهتمام كامل، وأسرار خاصة."
+                f"</blockquote>\n"
+            )
+        elif is_owner:
+            role_banner = (
+                f"<blockquote expandable>"
+                f"👑 <b>مالك وسيد النظام (System Master):</b>\n"
+                f"أنت صاحب الكيان الأساسي ومتحكم كامل في الرتب والقواعد والسيرفر."
+                f"</blockquote>\n"
+            )
+
+        role_perk = RoleLevel.ROLE_PERKS.get(role, "المعاملة الطبيعية المتوازنة.")
 
         text = (
             f"💖 <b>بطاقة المكانة والرصيد العاطفي عند «عُـمـر»</b> 💎\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>المستخدم:</b> <code>{user_name}</code> (<code>{user_id}</code>)\n"
             f"👑 <b>الرتبة في النظام:</b> <b>{role_title}</b>\n"
-            f"🏷️ <b>المكانة والعلاقة:</b> <b>{tier_display}</b>\n"
+            f"🏷️ <b>المكانة الحالية:</b> <b>{tier_display}</b>\n"
+            f"🌟 <b>ميزات رتبتك:</b> <i>{role_perk}</i>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"{owner_section}"
+            f"{role_banner}"
             f"📊 <b>تفاصيل أبعاد الرصيد والمشاعر:</b>\n\n"
             f"• 💖 <b>معزة وتفضيل عمر ليك (Affinity):</b>\n"
-            f"   └ <code>{affinity:.1f} / 100.0</code> [<code>{make_bar(affinity, 100.0)}</code>]\n\n"
+            f"   └ <code>{cls.render_affinity_bar(affinity)}</code>\n\n"
             f"• 🤝 <b>مستوى الثقة والأمان (Trust):</b>\n"
-            f"   └ <code>{trust:.1f} / 100.0</code> [<code>{make_bar(trust, 100.0)}</code>]\n\n"
+            f"   └ <code>{cls.render_affinity_bar(trust)}</code>\n\n"
             f"• 💘 <b>الكيمياء والقرب العاطفي (Bond):</b>\n"
-            f"   └ <code>{romance:.1f} / 100.0</code> [<code>{make_bar(romance, 100.0)}</code>]\n\n"
+            f"   └ <code>{cls.render_affinity_bar(romance)}</code>\n\n"
             f"• 🛡️ <b>الهيبة والاحترام المتبادل (Respect):</b>\n"
-            f"   └ <code>{respect:.1f} / 50.0</code> [<code>{make_bar(respect, 50.0)}</code>]\n"
+            f"   └ <code>{cls.render_affinity_bar(respect, max_v=50.0)}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<blockquote expandable>"
-            f"✨ <b>كيف يرتفع رصيدك ومكانتك عند عمر؟</b>\n"
-            f"• الكلام الطيب والمواساة يرفع الأوكسيتوسين والثقة 💖\n"
-            f"• الهزار والضحك وخفة الدم المشتركة ترفع الدوبامين والتفضيل ⚡\n"
-            f"• التفاعل المستمر يفتح أسراراً حصرية ونبرات كلام خاصة 💎\n"
-            f"• تنبيه: الإساءات أو الشتائم تخفض التفضيل (إلا للمالك المحصن)! ⚠️"
+            f"👑 <b>دليل الرتب الخاصة المتاحة في النظام:</b>\n"
+            f"• 👑 <b>Super Admin:</b> مالك النظام وسيد الكيان\n"
+            f"• ⭐ <b>Admin:</b> مسؤول معتمد وإدارة الرتب والقواعد\n"
+            f"• 🛡️ <b>Moderator:</b> مشرف الجروب وحماية الشات\n"
+            f"• 💎 <b>VIP:</b> عضو شرف مميز وردود سريعة وميديا حرة\n"
+            f"• 💖 <b>Favorite:</b> المفضل وشريك الروح ودلال خاص (+85)\n"
+            f"• 📜 <b>The Wise:</b> الحكيم وكبير القعدة وتوقير أدبي\n"
+            f"• 🤡 <b>Jester:</b> الفرفوش وصانع البهجة وألش مستمر\n"
+            f"• 👤 <b>Member:</b> عضو عادي متوازن\n"
+            f"• 🧊 <b>Cold Shoulder:</b> المتجاهل والردود الباردة المقتضبة\n"
+            f"• 🦹 <b>The Villain:</b> الشرير والعدو اللدود (-75) وقصف جبهات!\n\n"
+            f"💡 <i>للأدمن: لتعيين شخص كشرير:</i> <code>/villain 123456789</code>\n"
+            f"<i>ولأي رتبة أخرى:</i> <code>/promote 123456789 VIP</code>"
             f"</blockquote>"
         )
 
@@ -282,7 +316,7 @@ class TelegramMenuEngine:
     @classmethod
     async def render_admins_list(cls, user_id: int = 0) -> Tuple[str, Dict[str, Any]]:
         """
-        Lists all administrators, roles, and instructions to promote/demote.
+        Lists all administrators, roles, and instructions to promote/demote and villain assignment.
         """
         admins = await admin_manager.list_admins()
         lines = []
@@ -296,17 +330,21 @@ class TelegramMenuEngine:
         admins_formatted = "\n\n".join(lines) if lines else "<i>لا يوجد أدمنز مسجلين حالياً.</i>"
 
         text = (
-            f"👑 <b>قائمة مسؤولي وإدارة النظام</b> 🛡️\n"
+            f"👑 <b>قائمة مسؤولي وإدارة النظام والرتب</b> 🛡️\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"{admins_formatted}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<blockquote expandable>"
-            f"💡 <b>كيفية إضافة أدمن جديد مباشرة في الشات:</b>\n"
-            f"اكتب في الشات:\n"
-            f"<code>/add_admin 123456789 ADMIN</code>\n\n"
-            f"💡 <b>لحذف أدمن:</b>\n"
-            f"<code>/del_admin 123456789</code>\n"
-            f"<i>(الصلاحية محصورة فقط لمالك النظام الأساسي Super Admin).</i>"
+            f"💡 <b>كيفية تعيين رتبة الشرير وقلب التفضيل بالسالب:</b>\n"
+            f"<code>/villain 123456789</code>\n\n"
+            f"💡 <b>كيفية ترقية أو تعيين أي رتبة أخرى:</b>\n"
+            f"<code>/promote 123456789 VIP</code>\n"
+            f"<code>/promote 123456789 FAVORITE</code>\n"
+            f"<code>/promote 123456789 WISE</code>\n"
+            f"<code>/promote 123456789 JESTER</code>\n"
+            f"<code>/promote 123456789 COLD</code>\n\n"
+            f"💡 <b>لحذف رتبة عضو وإرجاعه عادياً:</b>\n"
+            f"<code>/del_admin 123456789</code>"
             f"</blockquote>"
         )
 

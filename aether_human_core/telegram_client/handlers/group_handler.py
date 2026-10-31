@@ -154,5 +154,13 @@ class GroupEventHandler:
                 emoji=resp.reaction_emoji,
             )
 
+        # Separate Bot Alert Notification for Affinity / Status Updates
+        if resp.affinity_notification:
+            await mtproto_manager.send_message(
+                chat_id=chat_id,
+                text=resp.affinity_notification,
+                reply_to_msg_id=message_id,
+            )
+
 
 group_handler = GroupEventHandler()

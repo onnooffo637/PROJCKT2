@@ -22,15 +22,38 @@ class RoleLevel:
     SUPER_ADMIN = 100
     ADMIN = 80
     MODERATOR = 50
-    VIP = 30
+    VIP = 40
+    FAVORITE = 35
+    WISE = 30
+    JESTER = 25
     MEMBER = 10
+    COLD = 5
+    VILLAIN = 0
 
     ROLE_NAMES = {
         "SUPER_ADMIN": "👑 مالك النظام (Super Admin)",
         "ADMIN": "⭐ مسؤول معتمد (Admin)",
-        "MODERATOR": "🛡️ مشرف (Moderator)",
-        "VIP": "💎 عضو مميز (VIP)",
+        "MODERATOR": "🛡️ مشرف الجروب (Moderator)",
+        "VIP": "💎 عضو شرف مميز (VIP)",
+        "FAVORITE": "💖 المفضل وشريك الروح (Favorite)",
+        "WISE": "📜 الحكيم وكبير القعدة (The Wise)",
+        "JESTER": "🤡 صانع البهجة والفرفوش (Jester)",
         "MEMBER": "👤 عضو عادي (Member)",
+        "COLD": "🧊 المتجاهل والبارد (Cold Shoulder)",
+        "VILLAIN": "🦹 الشرير والعدو اللدود (The Villain)",
+    }
+
+    ROLE_PERKS = {
+        "SUPER_ADMIN": "👑 أقصى صلاحيات مطلقة، تحكم بالسيرفر، تعيين وعزل كافة الرتب، وحصانة شاملة.",
+        "ADMIN": "⭐ صلاحيات إدارية كاملة، إدارة الرتب، إضافة الممنوعات، وطرد المخالفين.",
+        "MODERATOR": "🛡️ حماية الشات، حذف الرسائل المخالفة، وتنبيه الأعضاء.",
+        "VIP": "💎 أولوية فورية في الرد، ميديا بدون كول داون، وتقدير عالي في المحادثة.",
+        "FAVORITE": "💖 دلال واهتمام عاطفي استثنائي، معزة فائقة، ومشاركة الأسرار الخاصة.",
+        "WISE": "📜 احترام وتوقير فكري عالي، عمر يستشيره ويطلب نصيحته ويقدر كلامه جداً.",
+        "JESTER": "🤡 قفشات وهزار دائم، ألش مصري بأعلى طاقة، وخفة دم مستمرة.",
+        "MEMBER": "👤 المعاملة الاجتماعية الطبيعية والمتوازنة.",
+        "COLD": "🧊 ردود باردة ومقتضبة جداً بدون إيموجيات أو حماس.",
+        "VILLAIN": "🦹 رصيد سالب فوراً (-75)، قصف جبهات مستمر، احتقار شروره، وحرمان تام من الفويسات والصور!",
     }
 
 
@@ -115,8 +138,9 @@ class AdminManagerService:
             return False, "⚠️ عذراً يا غالي، صلاحية تعيين وإدارة الرتب محصورة فقط لمالك النظام الأساسي (Super Admin)."
 
         role_clean = role_val.upper().strip()
-        if role_clean not in ("ADMIN", "MODERATOR", "VIP", "MEMBER"):
-            return False, f"⚠️ الرتبة '{role_val}' غير معروفة. الرتب المتاحة: ADMIN, MODERATOR, VIP, MEMBER."
+        valid_roles = ("ADMIN", "MODERATOR", "VIP", "FAVORITE", "WISE", "JESTER", "MEMBER", "COLD", "VILLAIN")
+        if role_clean not in valid_roles:
+            return False, f"⚠️ الرتبة '{role_val}' غير معروفة. الرتب المتاحة: {', '.join(valid_roles)}."
 
         if tgt_id in settings.super_admin_ids_list and role_clean != "SUPER_ADMIN":
             return False, "⚠️ لا يمكن تعديل أو تخفيض رتبة مالك النظام الأساسي."
@@ -139,13 +163,40 @@ class AdminManagerService:
                 user.role_assigned_by = op_id
                 if custom_title:
                     user.custom_title = custom_title
-                user.updated_at = datetime.utcnow()
 
+            # Apply special role psychological attributes
+            if role_clean == "VILLAIN":
+                user.affinity_score = -75.0
+                user.trust_score = 0.0
+                user.romantic_attachment = 0.0
+                user.respect_dominance = -25.0
+                user.relationship_tier = "ANTAGONIST"
+            elif role_clean == "FAVORITE":
+                if user.affinity_score < 80.0:
+                    user.affinity_score = 85.0
+                user.relationship_tier = "EXCLUSIVE_PARTNER"
+            elif role_clean == "VIP":
+                if user.affinity_score < 60.0:
+                    user.affinity_score = 70.0
+            elif role_clean == "COLD":
+                user.affinity_score = min(user.affinity_score, -15.0)
+                user.relationship_tier = "RIVAL"
+
+            user.updated_at = datetime.utcnow()
             await session.commit()
 
         role_display = RoleLevel.ROLE_NAMES.get(role_clean, role_clean)
         logger.info(f"Operator [{op_id}] promoted user [{tgt_id}] to '{role_clean}'.")
         return True, f"✅ تم بنجاح تعيين المستخدم <code>{tgt_id}</code> برتبة: <b>{role_display}</b>."
+
+    async def set_user_villain(self, operator_id: int, target_id: int) -> Tuple[bool, str]:
+        """
+        Special quick action: Demotes user to VILLAIN, flipping their affinity negative immediately.
+        """
+        success, msg = await self.promote_user(operator_id=operator_id, target_id=target_id, role="VILLAIN")
+        if success:
+            return True, f"🦹 تم بنجاح تحويل المستخدم <code>{target_id}</code> إلى رتبة: <b>الشرير والعدو اللدود</b>!\nانقلب رصيد معزته بالسالب (-75.0) وعمر يعتبره عدواً رسمياً ولن يرسل له أي ميديا!"
+        return success, msg
 
     async def demote_user(
         self,

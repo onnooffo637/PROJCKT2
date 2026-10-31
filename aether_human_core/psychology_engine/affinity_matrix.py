@@ -14,7 +14,9 @@ logger = logging.getLogger("Aether.Psychology.Affinity")
 
 
 class RelationshipTier(str, Enum):
+    VILLAIN = "VILLAIN"
     ANTAGONIST = "ANTAGONIST"
+    RIVAL = "RIVAL"
     STRANGER = "STRANGER"
     ACQUAINTANCE = "ACQUAINTANCE"
     FRIEND = "FRIEND"
@@ -23,11 +25,15 @@ class RelationshipTier(str, Enum):
     EXCLUSIVE_PARTNER = "EXCLUSIVE_PARTNER"
 
     @classmethod
-    def get_display_name(cls, tier: str, is_owner: bool = False) -> str:
+    def get_display_name(cls, tier: str, is_owner: bool = False, role: Optional[str] = None) -> str:
+        if role == "VILLAIN" or str(tier).upper() in ("VILLAIN", "ANTAGONIST"):
+            return "🦹 الشرير والعدو اللدود (The Villain)"
         if is_owner:
-            return "👑 مالك وسيد النظام الأبدي (System Master)"
+            return "👑 مالك وسيد النظام (System Master)"
         mapping = {
-            "ANTAGONIST": "⚔️ خصم ومستفز (Antagonist)",
+            "VILLAIN": "🦹 الشرير والعدو اللدود (The Villain)",
+            "ANTAGONIST": "🦹 الشرير والعدو اللدود (The Villain)",
+            "RIVAL": "⚔️ المستفز والمنافس (Rival)",
             "STRANGER": "👤 غريب (Stranger)",
             "ACQUAINTANCE": "🌱 معرفة جديدة (Acquaintance)",
             "FRIEND": "⭐ صديق وفي (Friend)",
@@ -114,10 +120,10 @@ class AffinityMatrixCalculator:
                 dp = -15.0 * intensity
 
         elif action_type == "INSULT":
-            da = -15.0 * intensity
-            dt = -12.0 * intensity
-            dr = -10.0 * intensity
-            dp = -10.0 * intensity
+            da = -20.0 * intensity
+            dt = -18.0 * intensity
+            dr = -15.0 * intensity
+            dp = -15.0 * intensity
 
         elif action_type == "KEPT_PROMISE_OR_LOYALTY":
             da = 6.0 * intensity
@@ -132,12 +138,15 @@ class AffinityMatrixCalculator:
         return (da, dt, dr, dp)
 
     @classmethod
-    def recompute_tier(cls, vector: UserAffinityVector) -> RelationshipTier:
+    def recompute_tier(cls, vector: UserAffinityVector, role: Optional[str] = None) -> RelationshipTier:
         """
         Determines the qualitative social tier from continuous coordinates.
         """
-        if vector.affinity_score <= -40.0:
+        if role == "VILLAIN" or vector.affinity_score <= -40.0:
             return RelationshipTier.ANTAGONIST
+
+        if vector.affinity_score < 0.0:
+            return RelationshipTier.RIVAL
 
         if vector.romantic_attachment >= 75.0 and vector.trust_score >= 65.0:
             return RelationshipTier.EXCLUSIVE_PARTNER
@@ -148,10 +157,10 @@ class AffinityMatrixCalculator:
         if vector.affinity_score >= 60.0 and vector.trust_score >= 50.0:
             return RelationshipTier.CLOSE_FRIEND
 
-        if vector.affinity_score >= 20.0:
+        if vector.affinity_score >= 40.0:
             return RelationshipTier.FRIEND
 
-        if vector.affinity_score >= 0.0:
+        if vector.affinity_score >= 20.0:
             return RelationshipTier.ACQUAINTANCE
 
         return RelationshipTier.STRANGER

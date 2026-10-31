@@ -28,12 +28,7 @@ class UserRepository:
         result = await self.session.execute(stmt)
         user = result.scalars().first()
         if user and telegram_id in settings.super_admin_ids_list:
-            if user.affinity_score < 100.0 or user.relationship_tier != "EXCLUSIVE_PARTNER" or user.role != "SUPER_ADMIN":
-                user.affinity_score = 100.0
-                user.trust_score = 100.0
-                user.romantic_attachment = 100.0
-                user.respect_dominance = 50.0
-                user.relationship_tier = "EXCLUSIVE_PARTNER"
+            if not user.role:
                 user.role = "SUPER_ADMIN"
                 await self.session.flush()
         return user
@@ -100,6 +95,35 @@ class UserRepository:
             logger.info(f"Updated notes for user [{telegram_id}].")
         return user
 
+    async def set_user_role(
+        self, telegram_id: int, role: str, assigned_by: Optional[int] = None
+    ) -> Optional[UserModel]:
+        user = await self.get_by_telegram_id(telegram_id)
+        if user:
+            role_clean = role.upper().strip()
+            user.role = role_clean
+            user.role_assigned_by = assigned_by
+            if role_clean == "VILLAIN":
+                user.affinity_score = -75.0
+                user.trust_score = 0.0
+                user.romantic_attachment = 0.0
+                user.respect_dominance = -25.0
+                user.relationship_tier = "ANTAGONIST"
+            elif role_clean == "FAVORITE":
+                if user.affinity_score < 80.0:
+                    user.affinity_score = 85.0
+                user.relationship_tier = "EXCLUSIVE_PARTNER"
+            elif role_clean == "VIP":
+                if user.affinity_score < 60.0:
+                    user.affinity_score = 70.0
+            elif role_clean == "COLD":
+                user.affinity_score = min(user.affinity_score, -15.0)
+                user.relationship_tier = "RIVAL"
+            user.updated_at = datetime.utcnow()
+            await self.session.flush()
+            logger.info(f"Set role for [{telegram_id}] to '{role_clean}'.")
+        return user
+
     async def update_affinity_scores(
         self,
         telegram_id: int,
@@ -112,28 +136,15 @@ class UserRepository:
         if not user:
             raise ValueError(f"User with telegram_id {telegram_id} does not exist.")
 
-        # Root Super Admin / Owner: Affinity, Trust, and Romance are IMMUTABLY LOCKED at maximum (100.0)
-        from aether_human_core.config.settings import settings
-        if telegram_id in settings.super_admin_ids_list:
-            user.affinity_score = 100.0
-            user.trust_score = 100.0
-            user.romantic_attachment = 100.0
-            user.respect_dominance = 50.0
-            user.relationship_tier = "EXCLUSIVE_PARTNER"
-            user.role = "SUPER_ADMIN"
-            user.updated_at = datetime.utcnow()
-            await self.session.flush()
-            return user
-
-        # Clamp and update
+        # Clamp and update across full negative to positive continuum [-100.0, 100.0]
         user.affinity_score = max(-100.0, min(100.0, user.affinity_score + delta_affinity))
         user.trust_score = max(0.0, min(100.0, user.trust_score + delta_trust))
         user.romantic_attachment = max(0.0, min(100.0, user.romantic_attachment + delta_romantic))
         user.respect_dominance = max(-50.0, min(50.0, user.respect_dominance + delta_respect))
 
-        # Re-evaluate relationship tier
+        # Re-evaluate relationship tier dynamically
         user.relationship_tier = self._compute_relationship_tier(
-            user.affinity_score, user.trust_score, user.romantic_attachment
+            user.affinity_score, user.trust_score, user.romantic_attachment, user.role
         )
         user.updated_at = datetime.utcnow()
         await self.session.flush()
@@ -146,18 +157,20 @@ class UserRepository:
         return user
 
     @staticmethod
-    def _compute_relationship_tier(affinity: float, trust: float, romantic: float) -> str:
-        if affinity < -40.0:
+    def _compute_relationship_tier(affinity: float, trust: float, romantic: float, role: str = "") -> str:
+        if role == "VILLAIN" or affinity <= -40.0:
             return "ANTAGONIST"
+        if affinity < 0.0:
+            return "RIVAL"
         if romantic >= 75.0 and trust >= 65.0:
             return "EXCLUSIVE_PARTNER"
-        if romantic >= 45.0:
+        if romantic >= 45.0 and affinity >= 35.0:
             return "ROMANTIC_INTEREST"
         if affinity >= 60.0 and trust >= 50.0:
             return "CLOSE_FRIEND"
-        if affinity >= 20.0:
+        if affinity >= 40.0:
             return "FRIEND"
-        if affinity >= 0.0:
+        if affinity >= 20.0:
             return "ACQUAINTANCE"
         return "STRANGER"
 

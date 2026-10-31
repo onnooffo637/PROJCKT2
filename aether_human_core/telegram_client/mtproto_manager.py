@@ -585,21 +585,56 @@ class TelegramMTProtoManager:
             await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
             return True
 
-        elif cmd == "/add_admin":
+        elif cmd in ("/villain", "/set_villain", "/شرير"):
+            if not await admin_manager.is_admin(sender_id):
+                refusal = "🚫 <b>عفواً:</b> صلاحية تعيين الشرير محصورة للأدمنز ومالك النظام فقط."
+                await self.send_message_with_keyboard(chat_id, refusal, {}, reply_to_msg_id)
+                return True
+            if len(parts) < 2:
+                help_msg = (
+                    "🦹 <b>تعيين شخص كـ «شرير رسمي»:</b>\n"
+                    "<code>/villain &lt;user_id&gt;</code>\n"
+                    "<i>يقلب رصيد الشخص فوراً بالسالب (-75.0)، وعمر هيعامله كعدو ويسخر منه ويحرمه من الميديا!</i>"
+                )
+                await self.send_message_with_keyboard(chat_id, help_msg, {}, reply_to_msg_id)
+                return True
+            try:
+                target_id = int(parts[1])
+                ok, msg = await admin_manager.set_user_villain(operator_id=sender_id, target_id=target_id)
+                resp = f"🦹 <b>إدارة الأشرار والخصوم:</b>\n<blockquote>{msg}</blockquote>"
+                await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
+            except ValueError:
+                await self.send_message_with_keyboard(chat_id, "⚠️ اكتب الأيدي بالأرقام يا غالي: <code>/villain 123456789</code>", {}, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/add_admin", "/promote", "/set_role", "/رتبة"):
             if not await admin_manager.is_admin(sender_id):
                 refusal = "🚫 <b>عفواً يا غالي:</b>\n<blockquote>هذا الأمر مخصص لأصحاب الرتب الإدارية العليا والسوبر أدمن فقط 🛡️</blockquote>"
                 await self.send_message_with_keyboard(chat_id, refusal, {}, reply_to_msg_id)
                 return True
             if len(parts) < 2:
-                help_msg = "ℹ️ <b>طريقة الاستخدام:</b>\n<code>/add_admin &lt;user_id&gt; [ADMIN|MODERATOR|VIP]</code>"
+                help_msg = (
+                    "ℹ️ <b>طريقة تعيين وتغيير الرتب:</b>\n"
+                    "<code>/promote &lt;user_id&gt; &lt;ROLE&gt;</code>\n\n"
+                    "👑 <b>الرتب المتاحة:</b>\n"
+                    "• <code>ADMIN</code>: مسؤول معتمد\n"
+                    "• <code>MODERATOR</code>: مشرف الجروب\n"
+                    "• <code>VIP</code>: عضو شرف مميز\n"
+                    "• <code>FAVORITE</code>: المفضل وشريك الروح (+85)\n"
+                    "• <code>WISE</code>: الحكيم وكبير القعدة\n"
+                    "• <code>JESTER</code>: الفرفوش وصانع البهجة\n"
+                    "• <code>MEMBER</code>: عضو عادي\n"
+                    "• <code>COLD</code>: المتجاهل والبارد\n"
+                    "• <code>VILLAIN</code>: الشرير والعدو اللدود (-75)"
+                )
                 await self.send_message_with_keyboard(chat_id, help_msg, {}, reply_to_msg_id)
                 return True
             try:
                 target_id = int(parts[1])
                 target_role = parts[2].upper() if len(parts) > 2 else "ADMIN"
-                ok, msg = await admin_manager.promote_user(target_id, target_role, assigned_by=sender_id)
+                ok, msg = await admin_manager.promote_user(operator_id=sender_id, target_id=target_id, role=target_role)
                 status_icon = "👑" if ok else "⚠️"
-                resp = f"{status_icon} <b>إدارة الصلاحيات:</b>\n<blockquote>{msg}</blockquote>"
+                resp = f"{status_icon} <b>إدارة الصلاحيات والرتب:</b>\n<blockquote>{msg}</blockquote>"
                 await self.send_message_with_keyboard(chat_id, resp, {}, reply_to_msg_id)
             except ValueError:
                 await self.send_message_with_keyboard(chat_id, "⚠️ يجب كتابة الـ User ID كأرقام فقط.", {}, reply_to_msg_id)
