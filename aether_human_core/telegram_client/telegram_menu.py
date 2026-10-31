@@ -1,7 +1,7 @@
 """
 Ultra-Modern Telegram Interactive Control Panel, Menu Engine, and Inline Keyboards.
 Renders state-of-the-art HTML formatting, expandable blockquotes, and rich button-driven
-dashboards for server telemetry, psychological mood radar, admin governance, and media dispatch.
+dashboards with native colored buttons (Bot API 9.4+ style: primary, success, danger).
 """
 
 from __future__ import annotations
@@ -31,7 +31,8 @@ _BOT_START_TIME = time.time()
 
 class TelegramMenuEngine:
     """
-    Renders high-definition Telegram dashboards and constructs inline keyboard payloads.
+    Renders high-definition Telegram dashboards and constructs inline keyboard payloads
+    with native button color styling (primary=Blue, success=Green, danger=Red).
     """
 
     @staticmethod
@@ -90,22 +91,22 @@ class TelegramMenuEngine:
 
         buttons = [
             [
-                {"text": "💖 رصيد معزتي ومكانتي عند عمر 💎", "callback_data": "menu:user_affinity"},
+                {"text": "💖 رصيد معزتي ومكانتي عند عمر 💎", "callback_data": "menu:user_affinity", "style": "success"},
             ],
             [
-                {"text": "📊 حالة السيرفر والنظام ⚡", "callback_data": "menu:server_stats"},
-                {"text": "🧠 رادار المزاج والهرمونات ☕", "callback_data": "menu:mood_radar"},
+                {"text": "📊 حالة السيرفر والنظام ⚡", "callback_data": "menu:server_stats", "style": "primary"},
+                {"text": "🧠 رادار المزاج والهرمونات ☕", "callback_data": "menu:mood_radar", "style": "success"},
             ],
             [
-                {"text": "👑 إدارة الأدمنز والرتب 🛡️", "callback_data": "menu:admins"},
-                {"text": "📜 القواعد والممنوعات ⚖️", "callback_data": "menu:rules"},
+                {"text": "👑 إدارة الأدمنز والرتب 🛡️", "callback_data": "menu:admins", "style": "primary"},
+                {"text": "📜 القواعد والممنوعات ⚖️", "callback_data": "menu:rules", "style": "danger"},
             ],
             [
-                {"text": "🌐 لغات ولهجات البوت 🗺️", "callback_data": "menu:dialects"},
-                {"text": "🎙️ مركز الميديا (فويس وسيلفي) 📸", "callback_data": "menu:media"},
+                {"text": "🌐 لغات ولهجات البوت 🗺️", "callback_data": "menu:dialects", "style": "primary"},
+                {"text": "🎙️ مركز الميديا (فويس وسيلفي) 📸", "callback_data": "menu:media", "style": "success"},
             ],
             [
-                {"text": "🔄 تحديث اللوحة الشاملة ⚡", "callback_data": "menu:main"},
+                {"text": "🔄 تحديث اللوحة الشاملة ⚡", "callback_data": "menu:main", "style": "primary"},
             ],
         ]
 
@@ -186,8 +187,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث رصيدي الآن ⚡", "callback_data": "act:refresh_affinity"}],
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث رصيدي الآن ⚡", "callback_data": "act:refresh_affinity", "style": "success"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -230,8 +231,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث الإحصائيات الحية ⚡", "callback_data": "menu:server_stats"}],
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث الإحصائيات الحية ⚡", "callback_data": "menu:server_stats", "style": "primary"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -268,12 +269,12 @@ class TelegramMenuEngine:
 
         buttons = [
             [
-                {"text": "☕ اشرب قهوة (رفع الدوبامين) ⚡", "callback_data": "act:coffee"},
-                {"text": "🌿 روقان وتهدئة (خفض الكورتيزول) 🧘", "callback_data": "act:chill"},
+                {"text": "☕ اشرب قهوة (رفع الدوبامين) ⚡", "callback_data": "act:coffee", "style": "success"},
+                {"text": "🌿 روقان وتهدئة (خفض الكورتيزول) 🧘", "callback_data": "act:chill", "style": "primary"},
             ],
             [
-                {"text": "🔄 تحديث الرادار الحي 📡", "callback_data": "menu:mood_radar"},
-                {"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"},
+                {"text": "🔄 تحديث الرادار الحي 📡", "callback_data": "menu:mood_radar", "style": "primary"},
+                {"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"},
             ],
         ]
         return text, {"inline_keyboard": buttons}
@@ -310,8 +311,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث قائمة الإدارة 👑", "callback_data": "menu:admins"}],
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث قائمة الإدارة 👑", "callback_data": "menu:admins", "style": "primary"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -348,8 +349,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث القواعد النشطة 📜", "callback_data": "menu:rules"}],
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث القواعد النشطة 📜", "callback_data": "menu:rules", "style": "primary"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -383,7 +384,7 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -405,10 +406,10 @@ class TelegramMenuEngine:
 
         buttons = [
             [
-                {"text": "🎙️ اطلب فويس حصري من عمر 🎵", "callback_data": "act:send_voice"},
-                {"text": "📸 اطلب سيلفي حي من عمر 📷", "callback_data": "act:send_photo"},
+                {"text": "🎙️ اطلب فويس حصري من عمر 🎵", "callback_data": "act:send_voice", "style": "success"},
+                {"text": "📸 اطلب سيلفي حي من عمر 📷", "callback_data": "act:send_photo", "style": "primary"},
             ],
-            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main", "style": "danger"}],
         ]
         return text, {"inline_keyboard": buttons}
 
