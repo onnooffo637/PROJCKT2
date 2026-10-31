@@ -91,23 +91,18 @@ class HumanTyperSimulator:
     def calculate_typing_delay(
         cls,
         text: str,
-        wpm_base: int = settings.typing_speed_wpm_base,
+        wpm_base: int = 160,
         is_shy: bool = False,
     ) -> float:
         """
-        Calculates realistic typing duration in seconds based on word count, fatigue, and shyness.
+        Calculates ultra-responsive, snappy human typing duration (0.4s to 1.5s max).
+        Fast enough to feel instant while preserving authentic human typing UX.
         """
-        circadian = circadian_engine.evaluate_circadian_state()
-        effective_wpm = wpm_base * circadian["wpm_multiplier"]
-        if is_shy:
-            effective_wpm *= 0.75  # Typing slower due to nervousness
-
         word_count = max(1, len(text.split()))
-        # Minutes to seconds
-        base_seconds = (word_count / effective_wpm) * 60.0
-        # Add human thinking latency jitter (0.8s - 2.5s)
-        jitter = random.uniform(0.8, 2.5)
-        total_delay = max(1.2, min(14.0, base_seconds + jitter))
+        jitter = random.uniform(0.3, 0.6)
+        total_delay = max(0.4, min(1.5, (word_count * 0.05) + jitter))
+        if is_shy:
+            total_delay = min(1.8, total_delay + 0.3)
         return round(total_delay, 2)
 
     @classmethod

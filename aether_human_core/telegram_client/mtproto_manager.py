@@ -42,6 +42,8 @@ class TelegramMTProtoManager:
         self._last_update_id: int = 0
         self.bot_api_url = f"https://api.telegram.org/bot{self.bot_token}" if self.bot_token else ""
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._user_last_button_click: Dict[int, float] = {}
+        self._user_media_cooldown: Dict[Tuple[int, str], float] = {}
 
     async def _get_http(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -118,11 +120,11 @@ class TelegramMTProtoManager:
             if init_res.status_code == 200:
                 results = init_res.json().get("result", [])
                 if results:
-                    # Catch up with unread messages
+                    # Catch up with unread messages concurrently
                     logger.info(f"Processing {len(results)} pending incoming message(s) from Telegram...")
                     for u in results:
                         self._last_update_id = u["update_id"]
-                        await self._process_telegram_update(u)
+                        asyncio.create_task(self._process_telegram_update_safe(u))
         except Exception as exc:
             logger.warning(f"Error fetching initial update batch: {exc}")
 
@@ -134,7 +136,9 @@ class TelegramMTProtoManager:
                     data = res.json()
                     for update in data.get("result", []):
                         self._last_update_id = update["update_id"]
-                        await self._process_telegram_update(update)
+                        # Process each update in an independent concurrent task!
+                        # Guarantees buttons and messages never block or hang each other.
+                        asyncio.create_task(self._process_telegram_update_safe(update))
                 elif res.status_code == 409:
                     logger.warning("Telegram Bot conflict: another instance might be polling. Waiting 5s...")
                     await asyncio.sleep(5.0)
@@ -143,6 +147,15 @@ class TelegramMTProtoManager:
             except Exception as exc:
                 logger.debug(f"Polling network exception: {exc}")
                 await asyncio.sleep(2.0)
+
+    async def _process_telegram_update_safe(self, update: Dict[str, Any]) -> None:
+        """
+        Safely executes an update handler in a detached background task without crashing polling.
+        """
+        try:
+            await self._process_telegram_update(update)
+        except Exception as exc:
+            logger.error(f"Error handling Telegram update: {exc}", exc_info=True)
 
     async def _process_telegram_update(self, update: Dict[str, Any]) -> None:
         """
@@ -354,13 +367,13 @@ class TelegramMTProtoManager:
                     f"{self.bot_api_url}/sendChatAction",
                     json={"chat_id": chat_id, "action": "typing"},
                 )
-                await asyncio.sleep(min(duration_sec, 4.0))
+                await asyncio.sleep(min(duration_sec, 0.8))
             except Exception as exc:
                 logger.debug(f"Typing action exception: {exc}")
         elif self.client:
             try:
                 async with self.client.action(chat_id, "typing"):
-                    await asyncio.sleep(min(duration_sec, 4.0))
+                    await asyncio.sleep(min(duration_sec, 0.8))
             except Exception as exc:
                 logger.debug(f"Telethon typing action exception: {exc}")
 
@@ -408,7 +421,8 @@ class TelegramMTProtoManager:
 
     async def _process_callback_query(self, cb: Dict[str, Any]) -> None:
         """
-        Handles interactive inline button clicks from Telegram menus.
+        Handles interactive inline button clicks from Telegram menus with instant sub-second response,
+        anti-spam debounce, and media request rate-limiting.
         """
         query_id = cb.get("id")
         from_user = cb.get("from", {})
@@ -419,23 +433,56 @@ class TelegramMTProtoManager:
         chat_id = msg.get("chat", {}).get("id", user_id)
         message_id = msg.get("message_id")
 
+        now = time.time()
+        http = await self._get_http() if self.bot_token else None
+
+        # 1. Anti-Double-Click Debounce:
+        # Prevents accidental double-taps (< 0.4s) from executing duplicate logic
+        last_click = self._user_last_button_click.get(user_id, 0.0)
+        if now - last_click < 0.4:
+            if http:
+                try:
+                    await http.post(f"{self.bot_api_url}/answerCallbackQuery", json={"callback_query_id": query_id})
+                except Exception:
+                    pass
+            return
+        self._user_last_button_click[user_id] = now
+
+        # 2. Strict Rate-Limit & Cooldown on Media Buttons (Photo & Voice):
+        # Prevents users from spamming 5,000 photos or voice notes in rapid succession
+        if data in ("act:send_photo", "act:send_voice"):
+            last_media_time = self._user_media_cooldown.get((user_id, data), 0.0)
+            MEDIA_COOLDOWN_SEC = 15.0  # 15s cooldown
+            remaining = int(MEDIA_COOLDOWN_SEC - (now - last_media_time))
+            if remaining > 0:
+                if http:
+                    try:
+                        ans_payload = {
+                            "callback_query_id": query_id,
+                            "text": f"⏳ استنى {remaining} ثانية يا غالي قبل ما تطلب ميديا تانية علشان السيرفر يلاحق!",
+                            "show_alert": True,
+                        }
+                        await http.post(f"{self.bot_api_url}/answerCallbackQuery", json=ans_payload)
+                    except Exception:
+                        pass
+                return
+            self._user_media_cooldown[(user_id, data)] = now
+
         from aether_human_core.telegram_client.telegram_menu import telegram_menu
         text, markup, alert, trigger = await telegram_menu.handle_callback(data, user_id)
 
-        http = await self._get_http() if self.bot_token else None
-
-        # 1. Answer callback query
+        # 3. Answer callback query IMMEDIATELY so buttons never spin or hang
         if http:
             ans_payload: Dict[str, Any] = {"callback_query_id": query_id}
             if alert:
                 ans_payload["text"] = alert
-                ans_payload["show_alert"] = True
+                ans_payload["show_alert"] = True if ("استنى" in alert or "كورتيزول" in alert or "قهوة" in alert or "جاري" in alert) else False
             try:
                 await http.post(f"{self.bot_api_url}/answerCallbackQuery", json=ans_payload)
             except Exception as exc:
                 logger.debug(f"answerCallbackQuery error: {exc}")
 
-        # 2. Update message content if needed
+        # 4. Update message content immediately
         if text and message_id and http:
             try:
                 edit_payload = {
@@ -452,24 +499,29 @@ class TelegramMTProtoManager:
             except Exception as exc:
                 logger.debug(f"editMessageText error: {exc}")
 
-        # 3. Handle action trigger if requested
+        # 5. Execute action triggers in a DECOUPLED background task
+        # Generates photo/voice without blocking button responses or polling loop!
         if trigger == "send_voice":
             from aether_human_core.telegram_client.handlers.media_handler import media_handler
-            await media_handler.handle_voice_request(
-                message_id=message_id,
-                chat_id=chat_id,
-                sender_id=user_id,
-                sender_name=user_name,
-                message_text="ابعتلي فويس ضروري يا عمر",
+            asyncio.create_task(
+                media_handler.handle_voice_request(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=user_id,
+                    sender_name=user_name,
+                    message_text="ابعتلي فويس ضروري يا عمر",
+                )
             )
         elif trigger == "send_photo":
             from aether_human_core.telegram_client.handlers.media_handler import media_handler
-            await media_handler.handle_photo_request(
-                message_id=message_id,
-                chat_id=chat_id,
-                sender_id=user_id,
-                sender_name=user_name,
-                message_text="ابعتلي صورتك سيلفي دلوقتي يا عمر",
+            asyncio.create_task(
+                media_handler.handle_photo_request(
+                    message_id=message_id,
+                    chat_id=chat_id,
+                    sender_id=user_id,
+                    sender_name=user_name,
+                    message_text="ابعتلي صورتك سيلفي دلوقتي يا عمر",
+                )
             )
 
     async def _handle_command(
@@ -731,7 +783,7 @@ class TelegramMTProtoManager:
 
             # 3. Handle typo self-correction
             if burst.has_typo and burst.correction_text:
-                await asyncio.sleep(random.uniform(1.2, 2.5))
+                await asyncio.sleep(random.uniform(0.4, 0.8))
                 if self.bot_token and http:
                     try:
                         await http.post(
@@ -747,9 +799,9 @@ class TelegramMTProtoManager:
                     except Exception:
                         pass
 
-            # Micro-pause between bubbles
+            # Snappy micro-pause between bubbles
             if i < len(bursts) - 1:
-                await asyncio.sleep(random.uniform(0.6, 1.8))
+                await asyncio.sleep(random.uniform(0.2, 0.5))
 
     async def send_voice_note(
         self,

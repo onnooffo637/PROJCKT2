@@ -35,31 +35,40 @@ class TelegramFloodGuard:
     async def throttle_before_send(self, chat_id: int) -> None:
         """
         Paces outgoing messages to comply with Telegram rate limits without dropping packets.
+        Calculates pacing slots quickly under lock, then sleeps outside lock for concurrent throughput.
         """
+        wait_time = 0.0
         async with self._lock:
             now = time.time()
 
-            # 1. Per-chat 1.0 second delay check
+            # 1. Per-chat delay check (0.5s minimum interval between bubbles in same chat)
             last_chat_time = self._chat_last_send.get(chat_id, 0.0)
-            elapsed_chat = now - last_chat_time
-            if elapsed_chat < 1.0:
-                wait_time = 1.0 - elapsed_chat
-                await asyncio.sleep(wait_time)
-                now = time.time()
+            if now < last_chat_time:
+                target_chat_time = last_chat_time + 0.5
+            else:
+                elapsed_chat = now - last_chat_time
+                target_chat_time = now if elapsed_chat >= 0.5 else last_chat_time + 0.5
+
+            wait_chat = max(0.0, target_chat_time - now)
+            self._chat_last_send[chat_id] = target_chat_time
 
             # 2. Global sliding-window 1.0s capacity check
-            while self._global_call_timestamps and self._global_call_timestamps[0] < now - 1.0:
+            scheduled_now = now + wait_chat
+            while self._global_call_timestamps and self._global_call_timestamps[0] < scheduled_now - 1.0:
                 self._global_call_timestamps.popleft()
 
             if len(self._global_call_timestamps) >= self.global_max_rps:
                 oldest = self._global_call_timestamps[0]
-                wait_time = max(0.05, 1.0 - (now - oldest))
-                logger.info(f"Telegram Anti-Flood Shield: Pacing global outbound messages ({wait_time:.2f}s).")
-                await asyncio.sleep(wait_time)
-                now = time.time()
+                wait_global = max(0.0, 1.0 - (scheduled_now - oldest))
+            else:
+                wait_global = 0.0
 
-            self._chat_last_send[chat_id] = now
-            self._global_call_timestamps.append(now)
+            total_wait = wait_chat + wait_global
+            self._global_call_timestamps.append(now + total_wait)
+            wait_time = total_wait
+
+        if wait_time > 0.0:
+            await asyncio.sleep(min(wait_time, 2.0))
 
     def is_user_flooding(self, user_id: int, max_per_10s: int = 6) -> bool:
         """
@@ -93,3 +102,4 @@ class PlatformShieldService:
 
 # Global instance
 anti_ban_shield = PlatformShieldService()
+
