@@ -377,9 +377,36 @@ class CognitiveOrchestrator:
             da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
                 user_vector, action_type="KIND_SUPPORT" if hormones.oxytocin > 0.6 else "SHARED_HUMOR"
             )
-            await user_repo.update_affinity_scores(
+            updated_user = await user_repo.update_affinity_scores(
                 sender_id, delta_affinity=da, delta_trust=dt, delta_romantic=dr, delta_respect=dp
             )
+
+            # Flash update notification banner if affinity changed (Gamified Bonding XP)
+            is_owner = sender_id in settings.super_admin_ids_list
+            if not is_owner:
+                tier_ar = RelationshipTier.get_display_name(updated_user.relationship_tier)
+                filled = max(0, min(10, int(updated_user.affinity_score / 10))) if updated_user.affinity_score >= 0 else 0
+                bar_str = "▓" * filled + "░" * (10 - filled)
+                if da > 0.05:
+                    affinity_banner = (
+                        f"<blockquote>"
+                        f"✨ <b>[ 🔔 إشعار ارتقاء العلاقة والتفضيل ]</b>\n"
+                        f"📈 <b>تمت زيادة رصيدك عند عمر:</b> <b>+{da:.1f} 💖</b>\n"
+                        f"📊 <b>المستوى الحالي:</b> <b>{updated_user.affinity_score:.1f}/100</b> [<code>{bar_str}</code>]\n"
+                        f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                        f"</blockquote>\n\n"
+                    )
+                    raw_reply = f"{affinity_banner}{raw_reply}"
+                elif da < -0.05:
+                    affinity_banner = (
+                        f"<blockquote>"
+                        f"⚠️ <b>[ 🔔 إشعار تحديث التفضيل ]</b>\n"
+                        f"📉 <b>انخفض رصيدك عند عمر:</b> <b>{da:.1f} 💔</b>\n"
+                        f"📊 <b>المستوى الحالي:</b> <b>{updated_user.affinity_score:.1f}/100</b> [<code>{bar_str}</code>]\n"
+                        f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                        f"</blockquote>\n\n"
+                    )
+                    raw_reply = f"{affinity_banner}{raw_reply}"
 
             # Store memory in vector store
             await vector_memory.store_memory(

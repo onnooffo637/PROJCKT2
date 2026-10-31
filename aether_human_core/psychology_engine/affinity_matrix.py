@@ -22,6 +22,21 @@ class RelationshipTier(str, Enum):
     ROMANTIC_INTEREST = "ROMANTIC_INTEREST"
     EXCLUSIVE_PARTNER = "EXCLUSIVE_PARTNER"
 
+    @classmethod
+    def get_display_name(cls, tier: str, is_owner: bool = False) -> str:
+        if is_owner:
+            return "👑 مالك وسيد النظام الأبدي (System Master)"
+        mapping = {
+            "ANTAGONIST": "⚔️ خصم ومستفز (Antagonist)",
+            "STRANGER": "👤 غريب (Stranger)",
+            "ACQUAINTANCE": "🌱 معرفة جديدة (Acquaintance)",
+            "FRIEND": "⭐ صديق وفي (Friend)",
+            "CLOSE_FRIEND": "💎 صديق مقرب جداً (Close Friend)",
+            "ROMANTIC_INTEREST": "💘 إعجاب وكيمياء متبادلة (Romantic Interest)",
+            "EXCLUSIVE_PARTNER": "💖 شريك حصري وتوأم روح (Exclusive Partner)",
+        }
+        return mapping.get(str(tier).upper(), f"👤 {tier}")
+
 
 class UserAffinityVector(BaseModel):
     """

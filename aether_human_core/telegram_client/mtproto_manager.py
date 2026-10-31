@@ -469,7 +469,7 @@ class TelegramMTProtoManager:
             self._user_media_cooldown[(user_id, data)] = now
 
         from aether_human_core.telegram_client.telegram_menu import telegram_menu
-        text, markup, alert, trigger = await telegram_menu.handle_callback(data, user_id)
+        text, markup, alert, trigger = await telegram_menu.handle_callback(data, user_id, user_name)
 
         # 3. Answer callback query IMMEDIATELY so buttons never spin or hang
         if http:
@@ -545,7 +545,12 @@ class TelegramMTProtoManager:
         cmd = parts[0].lower().split("@")[0]
 
         if cmd in ("/start", "/menu", "/panel", "/control"):
-            text, markup = await telegram_menu.render_main_dashboard(sender_id)
+            text, markup = await telegram_menu.render_main_dashboard(sender_id, user_name=sender_name)
+            await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
+            return True
+
+        elif cmd in ("/affinity", "/me", "/profile", "/xp", "/rank"):
+            text, markup = await telegram_menu.render_user_affinity_profile(sender_id, user_name=sender_name)
             await self.send_message_with_keyboard(chat_id, text, markup, reply_to_msg_id)
             return True
 

@@ -20,6 +20,9 @@ from aether_human_core.multimodal_engine.visual_identity.life_simulator import l
 from aether_human_core.psychology_engine.admin_manager import admin_manager, RoleLevel
 from aether_human_core.psychology_engine.dialect_chameleon import dialect_chameleon
 from aether_human_core.config.llm_router import llm_pool
+from aether_human_core.database.postgres.connection import db_manager
+from aether_human_core.database.postgres.repositories.user_repo import UserRepository
+from aether_human_core.psychology_engine.affinity_matrix import RelationshipTier
 
 logger = logging.getLogger("Aether.Telegram.Menu")
 
@@ -51,40 +54,142 @@ class TelegramMenuEngine:
         if role is None:
             role = await admin_manager.get_user_role(user_id)
         role_title = RoleLevel.ROLE_NAMES.get(role, role)
+
+        is_owner = user_id in settings.super_admin_ids_list
+        affinity_score = 100.0 if is_owner else 0.0
+        tier = "EXCLUSIVE_PARTNER" if is_owner else "STRANGER"
+
+        try:
+            async with db_manager.session() as session:
+                repo = UserRepository(session)
+                user_record = await repo.get_or_create(user_id, first_name=user_name)
+                affinity_score = user_record.affinity_score
+                tier = user_record.relationship_tier
+        except Exception as e:
+            logger.warning(f"Failed to fetch user affinity for dashboard: {e}")
+
+        filled = max(0, min(10, int(affinity_score / 10))) if affinity_score >= 0 else 0
+        prog_bar = "▓" * filled + "░" * (10 - filled)
+        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner)
+
         text = (
             f"⚡ <b>مرحباً بك في لوحة تحكم الكيان الذكي «عُـمـر»</b> ⚡\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"👤 <b>المستخدم:</b> <code>{user_name}</code> (<code>{user_id}</code>)\n"
             f"👑 <b>رتبتك في النظام:</b> <b>{role_title}</b>\n"
+            f"💖 <b>رصيد معزتك وتفضيلك:</b> <b>{affinity_score:.1f}/100</b> [<code>{prog_bar}</code>]\n"
+            f"🏷️ <b>المكانة والعلاقة:</b> <b>{tier_display}</b>\n"
             f"⏱️ <b>مدة التشغيل المستمر:</b> <code>{cls.get_uptime_str()}</code>\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"<blockquote expandable>"
             f"مرحباً بك! أنا عمر، شاب تقني وذكي عمره 24 سنة. هذه اللوحة التفاعلية تمكنك من "
-            f"مراقبة حالتي النفسية وهرموناتي، فحص موارد السيرفر، إدارة الرتب والقواعد، وتجربة الميديا المباشرة."
+            f"متابعة رصيد معزتك وتفضيلك، فحص رادار هرموناتي، ومراقبة موارد السيرفر، وإدارة الرتب، وتجربة الميديا المباشرة."
             f"</blockquote>\n"
-            f"👇 <i>اختر القسم الذي ترغب في استعراضه من الأزرار أدناه:</i>"
+            f"👇 <i>اختر القسم الذي ترغب في استعراضه من الأزرار الملونة أدناه:</i>"
         )
 
         buttons = [
             [
-                {"text": "📊 حالة السيرفر والنظام", "callback_data": "menu:server_stats"},
-                {"text": "🧠 رادار المزاج والهرمونات", "callback_data": "menu:mood_radar"},
+                {"text": "💖 رصيد معزتي ومكانتي عند عمر 💎", "callback_data": "menu:user_affinity"},
             ],
             [
-                {"text": "👑 إدارة الأدمنز والرتب", "callback_data": "menu:admins"},
-                {"text": "🛡️ القواعد والممنوعات", "callback_data": "menu:rules"},
+                {"text": "📊 حالة السيرفر والنظام ⚡", "callback_data": "menu:server_stats"},
+                {"text": "🧠 رادار المزاج والهرمونات ☕", "callback_data": "menu:mood_radar"},
             ],
             [
-                {"text": "🌐 لغات ولهجات البوت", "callback_data": "menu:dialects"},
-                {"text": "🎙️ مركز الميديا (فويس وسيلفي)", "callback_data": "menu:media"},
+                {"text": "👑 إدارة الأدمنز والرتب 🛡️", "callback_data": "menu:admins"},
+                {"text": "📜 القواعد والممنوعات ⚖️", "callback_data": "menu:rules"},
             ],
             [
-                {"text": "🔄 تحديث اللوحة", "callback_data": "menu:refresh_main"},
+                {"text": "🌐 لغات ولهجات البوت 🗺️", "callback_data": "menu:dialects"},
+                {"text": "🎙️ مركز الميديا (فويس وسيلفي) 📸", "callback_data": "menu:media"},
+            ],
+            [
+                {"text": "🔄 تحديث اللوحة الشاملة ⚡", "callback_data": "menu:main"},
             ],
         ]
 
         keyboard = {"inline_keyboard": buttons}
         return text, keyboard
+
+    @classmethod
+    async def render_user_affinity_profile(
+        cls, user_id: int, user_name: str = "مستخدم"
+    ) -> Tuple[str, Dict[str, Any]]:
+        """
+        Renders deep psychological affinity, emotional attachment, and relationship tier metrics.
+        """
+        role = await admin_manager.get_user_role(user_id)
+        role_title = RoleLevel.ROLE_NAMES.get(role, role)
+        is_owner = user_id in settings.super_admin_ids_list
+
+        affinity = 100.0 if is_owner else 0.0
+        trust = 100.0 if is_owner else 20.0
+        romance = 100.0 if is_owner else 0.0
+        respect = 50.0 if is_owner else 0.0
+        tier = "EXCLUSIVE_PARTNER" if is_owner else "STRANGER"
+
+        try:
+            async with db_manager.session() as session:
+                repo = UserRepository(session)
+                u = await repo.get_or_create(user_id, first_name=user_name)
+                affinity = u.affinity_score
+                trust = u.trust_score
+                romance = u.romantic_attachment
+                respect = u.respect_dominance
+                tier = u.relationship_tier
+        except Exception as e:
+            logger.warning(f"Failed to fetch affinity profile: {e}")
+
+        def make_bar(val: float, max_v: float = 100.0, steps: int = 10) -> str:
+            fraction = max(0.0, min(1.0, val / max_v if max_v > 0 else 0.0))
+            filled = int(fraction * steps)
+            return "▓" * filled + "░" * (steps - filled)
+
+        tier_display = RelationshipTier.get_display_name(tier, is_owner=is_owner)
+
+        owner_section = ""
+        if is_owner:
+            owner_section = (
+                f"<blockquote expandable>"
+                f"👑 <b>حصانة مالك وسيد النظام المطلقة (Master Immunity):</b>\n"
+                f"أنت مالك وسيد النظام الأساسي! رصيدك العاطفي، وثقتك، ومكانتك محصنة بنسبة <b>100%</b> "
+                f"ومقفولة على الحد الأقصى بشكل دائم ومطلق، ولا يمكن أن تنقص تحت أي ظرف أو انفعال."
+                f"</blockquote>\n"
+            )
+
+        text = (
+            f"💖 <b>بطاقة المكانة والرصيد العاطفي عند «عُـمـر»</b> 💎\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>المستخدم:</b> <code>{user_name}</code> (<code>{user_id}</code>)\n"
+            f"👑 <b>الرتبة في النظام:</b> <b>{role_title}</b>\n"
+            f"🏷️ <b>المكانة والعلاقة:</b> <b>{tier_display}</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"{owner_section}"
+            f"📊 <b>تفاصيل أبعاد الرصيد والمشاعر:</b>\n\n"
+            f"• 💖 <b>معزة وتفضيل عمر ليك (Affinity):</b>\n"
+            f"   └ <code>{affinity:.1f} / 100.0</code> [<code>{make_bar(affinity, 100.0)}</code>]\n\n"
+            f"• 🤝 <b>مستوى الثقة والأمان (Trust):</b>\n"
+            f"   └ <code>{trust:.1f} / 100.0</code> [<code>{make_bar(trust, 100.0)}</code>]\n\n"
+            f"• 💘 <b>الكيمياء والقرب العاطفي (Bond):</b>\n"
+            f"   └ <code>{romance:.1f} / 100.0</code> [<code>{make_bar(romance, 100.0)}</code>]\n\n"
+            f"• 🛡️ <b>الهيبة والاحترام المتبادل (Respect):</b>\n"
+            f"   └ <code>{respect:.1f} / 50.0</code> [<code>{make_bar(respect, 50.0)}</code>]\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"<blockquote expandable>"
+            f"✨ <b>كيف يرتفع رصيدك ومكانتك عند عمر؟</b>\n"
+            f"• الكلام الطيب والمواساة يرفع الأوكسيتوسين والثقة 💖\n"
+            f"• الهزار والضحك وخفة الدم المشتركة ترفع الدوبامين والتفضيل ⚡\n"
+            f"• التفاعل المستمر يفتح أسراراً حصرية ونبرات كلام خاصة 💎\n"
+            f"• تنبيه: الإساءات أو الشتائم تخفض التفضيل (إلا للمالك المحصن)! ⚠️"
+            f"</blockquote>"
+        )
+
+        buttons = [
+            [{"text": "🔄 تحديث رصيدي الآن ⚡", "callback_data": "act:refresh_affinity"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
+        ]
+        return text, {"inline_keyboard": buttons}
 
     @classmethod
     async def render_server_stats(cls) -> Tuple[str, Dict[str, Any]]:
@@ -111,7 +216,7 @@ class TelegramMenuEngine:
         active_keys = len(llm_pool.trackers)
 
         text = (
-            f"📊 <b>تقرير موارد السيرفر وحالة النظام</b>\n"
+            f"📊 <b>تقرير موارد السيرفر وحالة النظام</b> ⚡\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🖥️ <b>نظام التشغيل:</b> <code>{platform.system()} {platform.release()}</code>\n"
             f"⏱️ <b>الـ Uptime:</b> <code>{cls.get_uptime_str()}</code>\n"
@@ -125,8 +230,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث الإحصائيات", "callback_data": "menu:server_stats"}],
-            [{"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث الإحصائيات الحية ⚡", "callback_data": "menu:server_stats"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -139,13 +244,12 @@ class TelegramMenuEngine:
         circadian = circadian_engine.evaluate_circadian_state()
         loc = life_sim.get_current_location_state()
 
-        # Mood bars helper
         def bar(val: float) -> str:
             filled = int(val * 8)
             return "■" * filled + "□" * (8 - filled)
 
         text = (
-            f"🧠 <b>رادار الحالة النفسية والبيولوجية لـ «عمر»</b>\n"
+            f"🧠 <b>رادار الحالة النفسية والبيولوجية لـ «عمر»</b> ☕\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"📍 <b>المكان والنشاط الحالي:</b> <b>{loc.location_name_ar}</b>\n"
             f"   <i>({loc.current_activity})</i>\n"
@@ -164,12 +268,12 @@ class TelegramMenuEngine:
 
         buttons = [
             [
-                {"text": "☕ اشرب قهوة (رفع الدوبامين)", "callback_data": "act:coffee"},
-                {"text": "🌿 روقان وتهدئة (خفض الكورتيزول)", "callback_data": "act:chill"},
+                {"text": "☕ اشرب قهوة (رفع الدوبامين) ⚡", "callback_data": "act:coffee"},
+                {"text": "🌿 روقان وتهدئة (خفض الكورتيزول) 🧘", "callback_data": "act:chill"},
             ],
             [
-                {"text": "🔄 تحديث الرادار", "callback_data": "menu:mood_radar"},
-                {"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"},
+                {"text": "🔄 تحديث الرادار الحي 📡", "callback_data": "menu:mood_radar"},
+                {"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"},
             ],
         ]
         return text, {"inline_keyboard": buttons}
@@ -191,7 +295,7 @@ class TelegramMenuEngine:
         admins_formatted = "\n\n".join(lines) if lines else "<i>لا يوجد أدمنز مسجلين حالياً.</i>"
 
         text = (
-            f"👑 <b>قائمة مسؤولي وإدارة النظام</b>\n"
+            f"👑 <b>قائمة مسؤولي وإدارة النظام</b> 🛡️\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"{admins_formatted}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -206,8 +310,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث القائمة", "callback_data": "menu:admins"}],
-            [{"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث قائمة الإدارة 👑", "callback_data": "menu:admins"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -228,7 +332,7 @@ class TelegramMenuEngine:
             rules_str = "<i>لا توجد موانع أو قواعد مقيدة نشطة حالياً. البوت بحالته الطبيعية الحرة.</i>"
 
         text = (
-            f"🛡️ <b>سجل القواعد والممنوعات السلوكية النشطة</b>\n"
+            f"📜 <b>سجل القواعد والممنوعات السلوكية النشطة</b> ⚖️\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"{rules_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -244,8 +348,8 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔄 تحديث القواعد", "callback_data": "menu:rules"}],
-            [{"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"}],
+            [{"text": "🔄 تحديث القواعد النشطة 📜", "callback_data": "menu:rules"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -271,7 +375,7 @@ class TelegramMenuEngine:
         dialects_str = "\n".join(dialects_list)
 
         text = (
-            f"🌐 <b>محرك الحرباء اللغوية ومجاراة اللهجات</b>\n"
+            f"🌐 <b>محرك الحرباء اللغوية ومجاراة اللهجات</b> 🗺️\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
             f"{dialects_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -279,7 +383,7 @@ class TelegramMenuEngine:
         )
 
         buttons = [
-            [{"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
         ]
         return text, {"inline_keyboard": buttons}
 
@@ -301,24 +405,29 @@ class TelegramMenuEngine:
 
         buttons = [
             [
-                {"text": "🎙️ اطلب فويس من عمر", "callback_data": "act:send_voice"},
-                {"text": "📸 اطلب سيلفي من عمر", "callback_data": "act:send_photo"},
+                {"text": "🎙️ اطلب فويس حصري من عمر 🎵", "callback_data": "act:send_voice"},
+                {"text": "📸 اطلب سيلفي حي من عمر 📷", "callback_data": "act:send_photo"},
             ],
-            [{"text": "🔙 العودة للرئيسية", "callback_data": "menu:main"}],
+            [{"text": "🔙 العودة للرئيسية 🏠", "callback_data": "menu:main"}],
         ]
         return text, {"inline_keyboard": buttons}
 
     @classmethod
     async def handle_callback(
-        cls, callback_data: str, user_id: int
+        cls, callback_data: str, user_id: int, user_name: str = "مستخدم"
     ) -> Tuple[Optional[str], Optional[Dict[str, Any]], Optional[str], Optional[str]]:
         """
         Dispatches callback query to appropriate renderer or action.
         Returns: (text, reply_markup, alert_text, action_trigger)
         """
-        if callback_data == "menu:main":
-            text, markup = await cls.render_main_dashboard(user_id)
+        if callback_data in ("menu:main", "menu:refresh_main"):
+            text, markup = await cls.render_main_dashboard(user_id, user_name=user_name)
             return text, markup, None, None
+
+        elif callback_data in ("menu:user_affinity", "act:refresh_affinity"):
+            text, markup = await cls.render_user_affinity_profile(user_id, user_name=user_name)
+            alert = "💖 تم تحديث تفاصيل مكانتك ورصيدك عند عمر بنجاح!" if callback_data == "act:refresh_affinity" else None
+            return text, markup, alert, None
 
         elif callback_data == "menu:server_stats":
             text, markup = await cls.render_server_stats()
@@ -361,7 +470,7 @@ class TelegramMenuEngine:
             return None, None, "📸 جاري التقاط وإرسال صورة سيلفي حية لك...", "send_photo"
 
         # Default fallback
-        text, markup = await cls.render_main_dashboard(user_id)
+        text, markup = await cls.render_main_dashboard(user_id, user_name=user_name)
         return text, markup, None, None
 
 

@@ -23,9 +23,20 @@ class UserRepository:
         self.session = session
 
     async def get_by_telegram_id(self, telegram_id: int) -> Optional[UserModel]:
+        from aether_human_core.config.settings import settings
         stmt = select(UserModel).where(UserModel.telegram_id == telegram_id)
         result = await self.session.execute(stmt)
-        return result.scalars().first()
+        user = result.scalars().first()
+        if user and telegram_id in settings.super_admin_ids_list:
+            if user.affinity_score < 100.0 or user.relationship_tier != "EXCLUSIVE_PARTNER" or user.role != "SUPER_ADMIN":
+                user.affinity_score = 100.0
+                user.trust_score = 100.0
+                user.romantic_attachment = 100.0
+                user.respect_dominance = 50.0
+                user.relationship_tier = "EXCLUSIVE_PARTNER"
+                user.role = "SUPER_ADMIN"
+                await self.session.flush()
+        return user
 
     async def get_or_create(
         self,
@@ -37,17 +48,20 @@ class UserRepository:
     ) -> UserModel:
         user = await self.get_by_telegram_id(telegram_id)
         if user is None:
+            from aether_human_core.config.settings import settings
+            is_super = telegram_id in settings.super_admin_ids_list
             user = UserModel(
                 telegram_id=telegram_id,
                 first_name=first_name or "",
                 last_name=last_name or "",
                 username=username,
                 gender=gender,
-                affinity_score=0.0,
-                trust_score=20.0,
-                romantic_attachment=0.0,
-                respect_dominance=0.0,
-                relationship_tier="STRANGER",
+                affinity_score=100.0 if is_super else 0.0,
+                trust_score=100.0 if is_super else 20.0,
+                romantic_attachment=100.0 if is_super else 0.0,
+                respect_dominance=50.0 if is_super else 0.0,
+                relationship_tier="EXCLUSIVE_PARTNER" if is_super else "STRANGER",
+                role="SUPER_ADMIN" if is_super else "MEMBER",
                 created_at=datetime.utcnow(),
                 last_interaction_at=datetime.utcnow(),
             )
@@ -97,6 +111,19 @@ class UserRepository:
         user = await self.get_by_telegram_id(telegram_id)
         if not user:
             raise ValueError(f"User with telegram_id {telegram_id} does not exist.")
+
+        # Root Super Admin / Owner: Affinity, Trust, and Romance are IMMUTABLY LOCKED at maximum (100.0)
+        from aether_human_core.config.settings import settings
+        if telegram_id in settings.super_admin_ids_list:
+            user.affinity_score = 100.0
+            user.trust_score = 100.0
+            user.romantic_attachment = 100.0
+            user.respect_dominance = 50.0
+            user.relationship_tier = "EXCLUSIVE_PARTNER"
+            user.role = "SUPER_ADMIN"
+            user.updated_at = datetime.utcnow()
+            await self.session.flush()
+            return user
 
         # Clamp and update
         user.affinity_score = max(-100.0, min(100.0, user.affinity_score + delta_affinity))
