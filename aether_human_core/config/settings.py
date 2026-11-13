@@ -37,7 +37,7 @@ class SystemSettings(BaseSettings):
         description="Comma-separated list of Google Gemini API keys"
     )
     gemini_default_model: str = Field(default="gemini-flash-lite-latest", description="Primary fast reasoning LLM")
-    gemini_reasoning_model: str = Field(default="gemini-3.5-flash-lite", description="Deep cognitive reflection model")
+    gemini_reasoning_model: str = Field(default="gemini-flash-latest", description="Deep cognitive reflection model")
     gemini_temperature: float = Field(default=0.85, description="Sampling temperature for human conversational variance")
     gemini_max_output_tokens: int = Field(default=1024, description="Max token limit per cognitive step")
 
@@ -51,6 +51,10 @@ class SystemSettings(BaseSettings):
 
     # Governance & Admins
     admin_user_ids: str = Field(default="", description="Comma-separated Telegram user IDs of Super Admins")
+    admin_telemetry_supergroup_id: Optional[int] = Field(default=None, description="Supergroup ID with Topics enabled for King's Omni-Observatory")
+    king_id: int = Field(default=0, description="Permanent Sovereign King user ID (read from KING_ID in .env)")
+    marcel_id: int = Field(default=0, description="Public Developer admin user ID (read from MARCEL_ID in .env)")
+    uncle_id: int = Field(default=0, description="Authorized family / operator user ID (read from UNCLE_ID in .env)")
 
     # Storage & Persistence
     postgres_url: str = Field(
@@ -70,6 +74,11 @@ class SystemSettings(BaseSettings):
     elevenlabs_api_key: Optional[str] = Field(default=None, description="ElevenLabs API key for ultra-realistic TTS")
     elevenlabs_voice_id: Optional[str] = Field(default=None, description="Voice ID for character tone")
     whisper_model_size: str = Field(default="large-v3", description="Local or remote Whisper model dimension")
+    voice_dsp_enabled: bool = Field(default=True, description="Enable smartphone highpass/lowpass/vol DSP filter chain")
+
+    @property
+    def VOICE_DSP_ENABLED(self) -> bool:
+        return self.voice_dsp_enabled
 
     # Admin Observatory
     admin_host: str = Field(default="0.0.0.0", description="Admin Observatory binding host")
@@ -82,6 +91,19 @@ class SystemSettings(BaseSettings):
     typo_base_probability: float = Field(default=0.04, description="Base likelihood of introducing a keyboard typo")
     seen_delay_min_seconds: float = Field(default=1.5, description="Minimum delay before marking a message as read")
     seen_delay_max_seconds: float = Field(default=12.0, description="Maximum delay before marking a message as read")
+
+    @field_validator("admin_telemetry_supergroup_id", mode="before")
+    @classmethod
+    def clean_telemetry_group_id(cls, v: object) -> Optional[int]:
+        if not v:
+            return None
+        v_str = str(v).strip()
+        if not v_str:
+            return None
+        try:
+            return int(v_str)
+        except ValueError:
+            return None
 
     @field_validator("gemini_api_keys", mode="before")
     @classmethod
@@ -115,6 +137,17 @@ class SystemSettings(BaseSettings):
         return int(v) if v else 8000
 
     @property
+    def the_king_user_id(self) -> int:
+        if self.king_id > 0:
+            return self.king_id
+        admins = self.super_admin_ids_list
+        return admins[0] if admins else 0
+
+    def is_king(self, user_id: int) -> bool:
+        kid = self.the_king_user_id
+        return kid > 0 and user_id == kid
+
+    @property
     def gemini_keys_list(self) -> List[str]:
         """
         Parses the comma-delimited Gemini API keys into a sanitized list of distinct keys.
@@ -141,3 +174,8 @@ class SystemSettings(BaseSettings):
 
 # Singleton global instance
 settings = SystemSettings()
+
+# Ensure CO_ADMIN_ID is globally available across all bot factory and security modules
+CO_ADMIN_ID: int = settings.marcel_id or 8639581207
+import builtins
+builtins.CO_ADMIN_ID = CO_ADMIN_ID

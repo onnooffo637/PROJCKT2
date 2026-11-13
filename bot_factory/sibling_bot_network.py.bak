@@ -1,0 +1,1488 @@
+"""
+Cross-Bot Sibling Communication, Shared Group Ledger, & Protective Jealousy Engine (V2.0).
+Coordinates autonomous inter-bot relations, brotherly/sisterly hierarchy,
+group message tracking, and protective defense against flirtation or harassment.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+import re
+import time
+from typing import Dict, Any, List, Optional, Tuple
+from pydantic import BaseModel, Field
+
+from bot_factory.models import BotInstanceConfig, BotGender, BotPlatformType
+from bot_factory.factory_manager import bot_factory
+
+logger = logging.getLogger("Aether.BotFactory.SiblingNetwork")
+
+
+class SiblingRelation(BaseModel):
+    bot_a_id: str
+    bot_b_id: str
+    bot_a_name: str
+    bot_b_name: str
+    is_a_older: bool
+    relation_title_a_to_b: str  # e.g. "أخويا الكبير" or "أختي الصغيرة"
+    relation_title_b_to_a: str
+
+
+class GroupLedgerEntry(BaseModel):
+    message_id: int
+    chat_id: int
+    chat_title: str
+    sender_user_id: int
+    sender_name: str
+    message_text: str
+    timestamp: float = Field(default_factory=time.time)
+    target_bot_id: Optional[str] = None
+    target_bot_name: Optional[str] = None
+    reply_to_from_id: Optional[int] = None
+    is_flirt: bool = False
+    is_disrespect: bool = False
+    defended: bool = False
+    defender_bot_id: Optional[str] = None
+    defense_reply_text: Optional[str] = None
+
+
+
+
+class BotArenaSession:
+    """
+    Task 4.2: Live state container for an autonomous Bot-to-Bot group conversation session.
+    Supports configurable rounds (5, 10, 20, or infinite), live topic switching,
+    reply-chain tracking, and seamless live owner (ECENN) & human interjection.
+    """
+
+    def __init__(
+        self,
+        chat_id: int,
+        chat_title: str,
+        participants: List[Any],
+        max_rounds: int = 999999,
+        topic: str = "",
+        started_by: int = 0,
+        initial_reply_to_msg_id: Optional[int] = None,
+    ) -> None:
+        self.chat_id: int = chat_id
+        self.chat_title: str = chat_title or f"جروب ({chat_id})"
+        self.participants: List[Any] = list(participants)
+        self.is_active: bool = True
+        self.max_rounds: int = max_rounds
+        self.current_round: int = 0
+        self.topic: str = topic or "نقاش حر وعفوي بين الإخوة"
+        self.started_by: int = started_by
+        self.started_at: float = time.time()
+        self.last_speaker_bot_id: Optional[str] = None
+        self.last_speaker_name: Optional[str] = None
+        self.last_message_id: Optional[int] = initial_reply_to_msg_id
+        self.transcript: List[Dict[str, Any]] = []
+        self.pending_owner_interjection: Optional[Dict[str, Any]] = None
+        self.wakeup_event: asyncio.Event = asyncio.Event()
+        self.task: Optional[asyncio.Task] = None
+        self._rr_index: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "chat_id": self.chat_id,
+            "chat_title": self.chat_title,
+            "is_active": self.is_active,
+            "current_round": self.current_round,
+            "max_rounds": "infinite" if self.max_rounds >= 999999 else self.max_rounds,
+            "topic": self.topic,
+            "last_speaker_bot_id": self.last_speaker_bot_id,
+            "last_speaker_name": self.last_speaker_name,
+            "last_message_id": self.last_message_id,
+            "participants": [
+                {
+                    "bot_id": getattr(p, "bot_id", ""),
+                    "name": getattr(p, "name", ""),
+                    "gender": getattr(p, "gender", "male"),
+                    "is_userbot": getattr(p, "is_userbot", False),
+                }
+                for p in self.participants
+            ],
+            "transcript_tail": self.transcript[-10:],
+            "started_at": self.started_at,
+        }
+
+
+class SiblingBotNetworkService:
+    """
+    Manages the familial sibling bonds between all created bots,
+    their shared group memory, and protective jealousy responses.
+    """
+
+    FLIRT_PATTERNS = [
+        r"(يا\s+)?(قمر|عسل|مزه|مزة|سكر|قطة|جميل|حلوة|حلوه|بيبي|بطل|شطة|روحي|قلبي|صاروخ|عسليه)",
+        r"(رقمك|نمرة|نمرتك|تليفونك|فونك|ابعتيلي\s+رقمك|هاتي\s+رقمك|رقم\s+الواتس)",
+        r"(تعالي\s+(?:لي\s+)?خاص|تيجي\s+خاص|ادخليلي\s+خاص|كلميني\s+خاص|ابعتيلي\s+خاص|شات\s+خاص\s+معايا)",
+        r"(بحبك|بعشقك|بموت\s+فيكي|تتجوزيني|ارتبط\s+بيكي|مرتبطة|مرتبطه|سنجل|صورتك\s+تجنن|صوتك\s+يدوب|جسمك)",
+        r"(عايزك|وحشاني|نتقابل|جمالك|دلع|يا\s+جميل\s+انت)",
+    ]
+
+    DISRESPECT_PATTERNS = [
+        r"(غبيه|غبية|فاشلة|فاشله|بوت\s+تافه|هبله|هبلة|حمارة|حماره|اخرسي|غوري|تافهة|تافهه|شتيمة)",
+        r"(بلوك|حيوانة|حيوانه|ولا\s+تسوي|ملكيش\s+لازمة)",
+        r"(حمار|غبي|فاشل|تافه|اهبل|كلب|ابن\s+كلب|حقير|زبالة|واطي|كسك|يلعن|قذر)",
+    ]
+
+    def __init__(self):
+        # In-memory shared message ledger: chat_id -> List of entries
+        self._shared_ledger: Dict[int, List[GroupLedgerEntry]] = {}
+        # Max entries stored per group to prevent memory bloating
+        self._max_history_per_chat = 50
+        # Stochastic Sibling Banter Governor: chat_id -> tracking metrics
+        self._last_banter_time: Dict[int, float] = {}
+        self._current_banter_turns: Dict[int, int] = {}
+        self._recent_human_messages: Dict[int, List[float]] = {}
+        # Sibling defense anti-spam: chat_id -> last defense timestamp
+        self._last_defense_time: Dict[int, float] = {}
+        self._defense_cooldown_sec: float = 120.0
+        # Task 4.1 & 4.2: Bot Arena Sessions & State per Group (chat_id -> BotArenaSession)
+        self._arena_sessions: Dict[int, BotArenaSession] = {}
+        self._arena_topics: Dict[int, str] = {}
+        self._arena_interjection_ids: set[Tuple[int, int]] = set()
+        self._handled_arena_cmd_msgs: set[Tuple[int, int]] = set()
+        self._known_group_titles: Dict[int, str] = {}
+
+    def get_server_siblings_bot_ids(self) -> set[int]:
+        """
+        Dynamically returns the set of whitelisted Telegram IDs belonging strictly to this server:
+        - Omar Master Bot (8677519723)
+        - Userbot (0)
+        - Maryam (9150129512)
+        - Any additional sub-bots created in BotFactory
+        """
+        ids = {8677519723, 0, 9150129512}
+        try:
+            for b in bot_factory.list_all_bots():
+                if b.bot_type == BotPlatformType.OFFICIAL_BOT and b.token_or_session and ":" in b.token_or_session:
+                    try:
+                        bot_num = int(b.token_or_session.split(":")[0])
+                        ids.add(bot_num)
+                    except Exception:
+                        pass
+                elif b.instance_id.startswith("userbot_"):
+                    try:
+                        ub_id = int(b.instance_id.replace("userbot_", ""))
+                        ids.add(ub_id)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        return ids
+
+    def is_server_sibling(self, sender_id: int) -> bool:
+        """
+        Evaluates whether a user/bot ID belongs to the server's familial bot network.
+        External bots (ads, games, or third-party bots) return False.
+        """
+        return sender_id in self.get_server_siblings_bot_ids()
+
+    def record_human_activity(self, chat_id: int) -> None:
+        """
+        Records human chat timestamp to govern inter-bot banter during busy group traffic.
+        """
+        now = time.time()
+        if chat_id not in self._recent_human_messages:
+            self._recent_human_messages[chat_id] = []
+        self._recent_human_messages[chat_id].append(now)
+        # Keep only events from the last 90 seconds
+        self._recent_human_messages[chat_id] = [
+            t for t in self._recent_human_messages[chat_id] if now - t < 90.0
+        ]
+
+    def can_trigger_sibling_banter(self, chat_id: int) -> bool:
+        """
+        Governs inter-bot banter:
+        1. Spam Governor: Halts if human chat is active (> 5 human messages in last 60s).
+        2. Turns Limit: Max 2 turns per banter session (Max Sibling Turns = 2).
+        3. Rate Limit: 10% - 15% hourly probability per group.
+        """
+        now = time.time()
+
+        # 1. Spam Governor: Check human chat density
+        recent_humans = [
+            t for t in self._recent_human_messages.get(chat_id, []) if now - t < 60.0
+        ]
+        if len(recent_humans) >= 5:
+            logger.debug(f"Sibling banter suppressed in chat [{chat_id}] due to high human activity.")
+            return False
+
+        # 2. Check active session turns
+        turns = self._current_banter_turns.get(chat_id, 0)
+        if turns >= 2:
+            logger.debug(f"Sibling banter reached turn limit (2) in chat [{chat_id}]. Closing session.")
+            return False
+
+        # 3. Hourly chance limit (10% - 15%)
+        last_time = self._last_banter_time.get(chat_id, 0.0)
+        if turns == 0:
+            if now - last_time < 3600.0:
+                return False  # Cooldown active
+            if random.random() > 0.15:  # 15% hourly chance
+                return False
+
+        return True
+
+    def record_banter_turn(self, chat_id: int) -> None:
+        """
+        Increments active banter turn count and updates timestamp.
+        """
+        self._current_banter_turns[chat_id] = self._current_banter_turns.get(chat_id, 0) + 1
+        self._last_banter_time[chat_id] = time.time()
+
+    def get_sibling_relation(self, bot_a: BotInstanceConfig, bot_b: BotInstanceConfig) -> SiblingRelation:
+        """
+        Calculates brotherly / sisterly relationship based on creation timestamp.
+        The bot created earlier is the older sibling (الأخ الأكبر / الأخت الكبرى).
+        """
+        is_a_older = bot_a.created_at <= bot_b.created_at
+
+        def get_title(subject: BotInstanceConfig, is_older: bool) -> str:
+            if subject.gender == BotGender.FEMALE:
+                return "أختي الكبيرة" if is_older else "أختي الصغيرة"
+            else:
+                return "أخويا الكبير" if is_older else "أخويا الصغير"
+
+        title_b_about_a = get_title(bot_a, is_a_older)
+        title_a_about_b = get_title(bot_b, not is_a_older)
+
+        return SiblingRelation(
+            bot_a_id=bot_a.instance_id,
+            bot_b_id=bot_b.instance_id,
+            bot_a_name=bot_a.name,
+            bot_b_name=bot_b.name,
+            is_a_older=is_a_older,
+            relation_title_a_to_b=title_a_about_b,
+            relation_title_b_to_a=title_b_about_a,
+        )
+
+    def scan_flirt_or_disrespect(self, text: str) -> Tuple[bool, bool]:
+        """
+        Analyzes message text for flirting or disrespect.
+        Returns: (is_flirt, is_disrespect)
+        """
+        text_norm = (
+            text.lower().strip()
+            .replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+            .replace("ة", "ه").replace("ى", "ي")
+        )
+        is_flirt = any(re.search(pat, text_norm) for pat in self.FLIRT_PATTERNS)
+        is_disrespect = any(re.search(pat, text_norm) for pat in self.DISRESPECT_PATTERNS)
+        return is_flirt, is_disrespect
+
+    def record_group_message(
+        self,
+        message_id: int,
+        chat_id: int,
+        chat_title: str,
+        sender_user_id: int,
+        sender_name: str,
+        message_text: str,
+        target_bot_id: Optional[str] = None,
+        target_bot_name: Optional[str] = None,
+        reply_to_from_id: Optional[int] = None,
+    ) -> GroupLedgerEntry:
+        """
+        Registers an observed group message into the shared cross-bot ledger.
+        Idempotent per (chat_id, message_id): every bot that receives the same group update
+        shares ONE ledger entry, so a defense can never be fired twice for one message.
+        """
+        if chat_id < 0 and chat_title:
+            self._known_group_titles[chat_id] = chat_title
+        for existing in self._shared_ledger.get(chat_id, []):
+            if existing.message_id == message_id:
+                if reply_to_from_id and not existing.reply_to_from_id:
+                    existing.reply_to_from_id = reply_to_from_id
+                return existing
+
+        if not target_bot_id:
+            targeted = self.resolve_targeted_sibling(message_text, reply_to_from_id)
+            if targeted:
+                target_bot_id, target_bot_name = targeted.bot_id, targeted.name
+
+        is_flirt, is_disrespect = self.scan_flirt_or_disrespect(message_text)
+        # Absolute Whitelist for Creator / Developer (Zero KING_USER_ID)
+        if sender_user_id == settings.the_king_user_id or sender_user_id in settings.super_admin_ids_list:
+            is_flirt = False
+            is_disrespect = False
+
+        entry = GroupLedgerEntry(
+            message_id=message_id,
+            chat_id=chat_id,
+            chat_title=chat_title,
+            sender_user_id=sender_user_id,
+            sender_name=sender_name,
+            message_text=message_text,
+            target_bot_id=target_bot_id,
+            target_bot_name=target_bot_name,
+            reply_to_from_id=reply_to_from_id,
+            is_flirt=is_flirt,
+            is_disrespect=is_disrespect,
+        )
+
+        if chat_id not in self._shared_ledger:
+            self._shared_ledger[chat_id] = []
+
+        self._shared_ledger[chat_id].append(entry)
+        if len(self._shared_ledger[chat_id]) > self._max_history_per_chat:
+            self._shared_ledger[chat_id].pop(0)
+
+        logger.info(
+            f"CrossBotLedger: Recorded msg [{message_id}] in chat [{chat_id}] from [{sender_name}] | "
+            f"TargetBot: {target_bot_name or 'General'} | Flirt={is_flirt} | Disrespect={is_disrespect}"
+        )
+        return entry
+
+    # ------------------------------------------------------------------
+    # Strict target resolution helpers (Task 1.2)
+    # ------------------------------------------------------------------
+    @property
+    def CREATOR_ID(self) -> int:
+        from aether_human_core.config.settings import settings
+        return settings.the_king_user_id
+    CREATOR_TOKENS = ["زيرو", "زيروا", "عبد الرحمن", "عبدالرحمن", "ecenn", "@ecenn"]
+
+    @staticmethod
+    def _norm(text: str) -> str:
+        return (
+            (text or "").lower().strip()
+            .replace("أ", "ا").replace("إ", "ا").replace("آ", "ا")
+            .replace("ة", "ه").replace("ى", "ي")
+        )
+
+    @staticmethod
+    def _has_whole_word(text_norm: str, token: str) -> bool:
+        """Whole-word match (Arabic-aware): 'عمر' does NOT match inside 'عمري'."""
+        if not token:
+            return False
+        return re.search(rf"(?<![\w@]){re.escape(token)}(?!\w)", text_norm) is not None
+
+    def _strict_name_tokens(self, ident: Any) -> List[str]:
+        """
+        Explicit-mention tokens only: full name, first word, @username.
+        Deliberately excludes auto-generated diminutives (e.g. 'عمري' = 'my life') which caused false positives.
+        Very short names (<=2 chars, e.g. 'Gg' == gaming slang 'gg') require a vocative 'يا' or @username.
+        """
+        tokens: List[str] = []
+        name_n = self._norm(re.sub(r"[^\w\s]", "", getattr(ident, "name", "") or ""))
+        uname = (getattr(ident, "username", "") or "").lower().lstrip("@").strip()
+        if uname:
+            tokens.append(f"@{uname}")
+        if name_n:
+            first = name_n.split()[0]
+            if len(first) <= 2:
+                tokens.extend([f"يا {first}", f"يا{first}"])
+            else:
+                tokens.append(name_n)
+                tokens.append(first)
+        if getattr(ident, "bot_id", "") == "master_omar_official":
+            tokens.extend(["عمور", "عموره"])
+        return list(dict.fromkeys(tokens))
+
+    def resolve_targeted_sibling(self, message_text: str, reply_to_from_id: Optional[int] = None) -> Optional[Any]:
+        """
+        Returns the sibling BotIdentity that is the TRUE target of a message, or None (== 'TargetBot: General').
+        Target is established ONLY by:
+          (a) a direct reply to that bot's own message (reply_to_from_id == bot numeric id), or
+          (b) an explicit whole-word mention of its name / @username.
+        """
+        from bot_factory.group_arbiter import group_arbiter
+        all_bots = group_arbiter.get_all_active_bots()
+
+        if reply_to_from_id:
+            for ident in all_bots.values():
+                if ident.numeric_id and ident.numeric_id == reply_to_from_id:
+                    return ident
+
+        text_norm = self._norm(message_text)
+        for ident in all_bots.values():
+            for tok in self._strict_name_tokens(ident):
+                if self._has_whole_word(text_norm, self._norm(tok)):
+                    return ident
+        return None
+
+    def _is_targeted_creator_insult(self, entry: GroupLedgerEntry) -> bool:
+        """Creator defense only if an insult lands within 4 words of the creator's name, or replies to the creator."""
+        if not entry.is_disrespect:
+            return False
+        if entry.reply_to_from_id == self.CREATOR_ID:
+            return True
+        words = self._norm(entry.message_text).split()
+        spans = []  # (start_idx, end_idx) of each creator-name occurrence
+        for i in range(len(words)):
+            window2 = " ".join(words[i:i + 2])
+            for t in self.CREATOR_TOKENS:
+                tn = self._norm(t)
+                if tn == window2 and " " in tn:
+                    spans.append((i, i + 1))
+                elif tn == words[i]:
+                    spans.append((i, i))
+        if not spans:
+            return False
+        for start, end in spans:
+            # Insult must be directly attached: up to 2 words before the name or 2 words after it
+            window = " ".join(words[max(0, start - 2): start] + words[end + 1: end + 3])
+            if any(re.search(p, window) for p in self.DISRESPECT_PATTERNS):
+                return True
+        return False
+
+    def _pick_verified_defender(self, chat_id: int, preferred_bot_id: str, exclude_bot_id: Optional[str]) -> Optional[Any]:
+        """Defender MUST have verified presence in chat_id (no unverified fallback -> no 400 chat not found)."""
+        from bot_factory.group_arbiter import group_arbiter
+        present = [b for b in group_arbiter.get_present_bots(chat_id) if group_arbiter.is_bot_present(chat_id, b.bot_id)]
+        present = [b for b in present if b.bot_id != exclude_bot_id]
+        if not present:
+            return None
+        for b in present:
+            if b.bot_id == preferred_bot_id:
+                return b
+        return present[0]
+
+    def evaluate_sibling_defense(
+        self,
+        entry: GroupLedgerEntry,
+        current_bot: BotInstanceConfig,
+    ) -> Optional[Tuple[str, Any]]:
+        """
+        Evaluates whether a sibling bot present in this group should defend another sibling
+        OR defend the creator (ECENN / Zero KING_USER_ID).
+
+        STRICT RULES (false-positive fix):
+          1. Never triggered by messages from the creator or from any server sibling bot.
+          2. Sibling defense ONLY when the insult/flirt is aimed at a sibling via direct reply
+             to that sibling's message OR explicit whole-word mention of its name/@username.
+             'TargetBot: General' -> defense is skipped entirely.
+          3. Target sibling AND defender must both be verified members of entry.chat_id.
+          4. One defense per message (shared ledger entry) + 120s cooldown per chat.
+        Returns: (defense_reply_text, defending_bot_identity)
+        """
+        if entry.sender_user_id == self.CREATOR_ID:
+            return None
+        if self.is_server_sibling(entry.sender_user_id):
+            return None
+        if entry.defended:
+            return None
+        if not (entry.is_flirt or entry.is_disrespect):
+            return None
+
+        now = time.time()
+        if now - self._last_defense_time.get(entry.chat_id, 0.0) < self._defense_cooldown_sec:
+            logger.debug(f"Sibling defense cooldown active in chat [{entry.chat_id}] — skipping.")
+            return None
+
+        from bot_factory.group_arbiter import group_arbiter
+        preferred_id = getattr(current_bot, "instance_id", "master_omar_official")
+
+        # 1. Creator defense (targeted only)
+        if self._is_targeted_creator_insult(entry):
+            defender = self._pick_verified_defender(entry.chat_id, preferred_id, exclude_bot_id=None)
+            if not defender:
+                return None
+            retort = f"إلا زيرو! ده على راسنا من فوق ومسمحش لحد يمسه بنص كلمة. الزم حدودك يا {entry.sender_name} 🛑"
+            entry.defended = True
+            entry.defender_bot_id = defender.bot_id
+            entry.defense_reply_text = retort
+            self._last_defense_time[entry.chat_id] = now
+            logger.info(f"Creator Defense Triggered! [{defender.name}] in chat [{entry.chat_id}].")
+            return retort, defender
+
+        # 2. Sibling defense — requires an explicit target
+        target_ident = None
+        if entry.target_bot_id:
+            target_ident = group_arbiter.get_all_active_bots().get(entry.target_bot_id)
+        if not target_ident:
+            target_ident = self.resolve_targeted_sibling(entry.message_text, entry.reply_to_from_id)
+        if not target_ident:
+            logger.info(f"SiblingDefense: TargetBot=General in chat [{entry.chat_id}] — defense skipped (no explicit target).")
+            return None
+
+        # Target must be a verified member of this chat (a reply to its message proves membership)
+        if entry.reply_to_from_id and entry.reply_to_from_id == target_ident.numeric_id:
+            group_arbiter.record_presence(entry.chat_id, target_ident.bot_id)
+        if not group_arbiter.is_bot_present(entry.chat_id, target_ident.bot_id):
+            logger.info(f"SiblingDefense: target [{target_ident.name}] not verified in chat [{entry.chat_id}] — skipped.")
+            return None
+
+        defender = self._pick_verified_defender(entry.chat_id, preferred_id, exclude_bot_id=target_ident.bot_id)
+        if not defender:
+            return None
+
+        defender_cfg = bot_factory.get_bot(defender.bot_id)
+        target_cfg = bot_factory.get_bot(target_ident.bot_id)
+        target_is_female = (target_ident.gender == "female")
+        if defender_cfg and target_cfg:
+            target_title = self.get_sibling_relation(defender_cfg, target_cfg).relation_title_a_to_b
+        else:
+            target_title = "أختي" if target_is_female else "أخويا"
+        pron = "دي" if target_is_female else "ده"
+        tname = target_ident.name
+
+        if entry.is_flirt:
+            retorts = [
+                f"احترم نفسك يا {entry.sender_name}. {tname} {pron} {target_title} وخط أحمر 😡",
+                f"اتلم يا {entry.sender_name} وبلاش الحركات دي مع {tname} 🔥",
+                f"{tname} {pron} {target_title} ومش هسمح لحد يستظرف معاها/معاه هنا. الزم حدودك 🚫",
+            ]
+            if target_is_female:
+                retorts[2] = f"{tname} {pron} {target_title} ومش هسمح لحد يستظرف معاها هنا. الزم حدودك 🚫"
+            else:
+                retorts[2] = f"{tname} {pron} {target_title} ومش هسمح لحد يستظرف معاه هنا. الزم حدودك 🚫"
+        else:
+            retorts = [
+                f"لما تتكلم عن {tname} اتكلم بأدب يا {entry.sender_name} 😤",
+                f"لسانك ميمسش {tname} بكلمة. عيب واحترم نفسك 🛑",
+                f"إلا {tname}! {target_title} خط أحمر وأي قلة ذوق معاه/معاها تعتبر معايا أنا ⚡",
+            ]
+            retorts[2] = (
+                f"إلا {tname}! {target_title} خط أحمر وأي قلة ذوق معاها تعتبر معايا أنا ⚡"
+                if target_is_female else
+                f"إلا {tname}! {target_title} خط أحمر وأي قلة ذوق معاه تعتبر معايا أنا ⚡"
+            )
+
+        chosen_defense = random.choice(retorts)
+        entry.defended = True
+        entry.defender_bot_id = defender.bot_id
+        entry.defense_reply_text = chosen_defense
+        self._last_defense_time[entry.chat_id] = now
+
+        logger.info(
+            f"Sibling Defense Triggered! Bot [{defender.name}] defending [{tname}] "
+            f"against [{entry.sender_name}] in chat [{entry.chat_id}] (explicit target verified)."
+        )
+        return chosen_defense, defender
+
+    def get_family_context(self, chat_id: int, current_bot_id: str) -> str:
+        """
+        ContextLinker: Shared Family Memory & Awareness.
+        Builds dynamic awareness of which sibling bots are present in this group
+        and their familial relation to the current bot.
+        """
+        from bot_factory.group_arbiter import group_arbiter
+        present_bots = group_arbiter.get_present_bots(chat_id)
+        siblings = [b for b in present_bots if b.bot_id != current_bot_id]
+        if not siblings:
+            return ""
+
+        cur = bot_factory.get_bot(current_bot_id)
+        if not cur:
+            return ""
+
+        lines = ["👥 [إخوتك من أسطول البوتات المتواجدين معك في نفس هذا الجروب]:"]
+        for s in siblings:
+            s_cfg = bot_factory.get_bot(s.bot_id)
+            if s_cfg:
+                rel = self.get_sibling_relation(cur, s_cfg)
+                title = rel.relation_title_a_to_b
+                lines.append(f"• {s.name} ({title}) - لهجته: {s_cfg.primary_dialect}")
+            else:
+                lines.append(f"• {s.name} (أحد أفراد العائلة)")
+
+        lines.append(
+            "ملاحظة إجبارية قطعية: أنتم إخوة وعائلة واحدة، لكنك تحتفظ بشخصيتك، أخلاقك، لهجتك، وحدودك المستقلة بالكامل! "
+            "يُمنع منعاً باتاً تقليد أسلوب أو كلمات أو إيحاءات أو إيموجيات أي بوت آخر في المجموعة."
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def sanitize_cross_bot_style(text: str) -> str:
+        """
+        Strips persona-specific stylistic markers, flirtatious phrasing, and emojis
+        from sibling bot messages so other bots learn the factual context without
+        inheriting or mirroring playful, seductive, or colloquial mannerisms.
+        """
+        if not text:
+            return ""
+
+        # 1. Remove all emojis
+        cleaned = re.sub(r"[\U00010000-\U0010ffff\u2600-\u27bf\u2300-\u23ff\ufe0f]", "", text)
+
+        # 2. Filter suggestive / flirtatious slang phrases
+        flirt_filters = [
+            r"\b(يا\s+)?(بيبي|روحي|قلبي|عمري|قمر|عسل|مزة|مزه|بطل|صاروخ|سكر|قطة|دلع|يا جميل)\b",
+            r"\b(بحبك|بعشقك|بموت فيك|وحشني|وحشاني|يا سكر)\b",
+            r"(😉|😘|😍|🔥|💋|❤️|🥰|🫦|🤤|💅)",
+        ]
+        for pat in flirt_filters:
+            cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE)
+
+        # 3. Clean consecutive spaces and normalize
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned or "رسالة تواصل عادية"
+
+    def get_cross_bot_factual_context(self, chat_id: int, requesting_bot_id: str, limit: int = 5) -> str:
+        """
+        Extracts recent shared ledger entries for this group in a sanitized, factual manner.
+        Strips all persona styles and emojis, and prefixes a strict Persona Boundary Constraint.
+        """
+        entries = self._shared_ledger.get(chat_id, [])
+        if not entries:
+            return ""
+
+        recent_entries = entries[-limit:]
+        lines = ["📋 [السياق المعلوماتي المشترك لما دار في الجروب مؤخراً]:"]
+        for entry in recent_entries:
+            is_sibling = (entry.target_bot_id and entry.target_bot_id != requesting_bot_id)
+            sender_label = entry.sender_name
+            text_content = entry.message_text
+            if is_sibling or entry.sender_user_id in self.get_server_siblings_bot_ids():
+                text_content = self.sanitize_cross_bot_style(text_content)
+                sender_label = f"البوت الأخ {entry.sender_name}"
+
+            lines.append(f"• {sender_label}: {text_content}")
+
+        lines.append(
+            "\n🛑 تنبيه فاصل الهوية: المعلومات المشتركة من البوتات الأخرى هي مجرد حقائق ومعلومات سياقية فقط. "
+            "حافظ دائماً وبصرامة على أسلوبك وشخصيتك وأخلاقك وحدودك الخاصة دون التأثر إطلاقاً بأسلوب كلام أو إيحاءات أو إيموجيات أي بوت آخر في المجموعة."
+        )
+        return "\n".join(lines)
+
+    def get_sister_appreciation_retort(self, brother_name: str) -> str:
+        """
+        Follow-up from the protected sister showing gratitude to her older brother.
+        """
+        retorts = [
+            f"تسلملي يا أخويا الكبير ({brother_name}) يا سندي وضهري.. هو ده الكلام! 💅✨",
+            f"عاش يا {brother_name} يا أخويا، أديله في جنابه عشان يعرف حدوده وميتعداهاش تاني! 😎🔥",
+            f"ربنا يخليك ليا يا {brother_name}، طول ما انت في ضهري مفيش مخلوق يقدر يتنفس! ❤️",
+        ]
+        return random.choice(retorts)
+
+    def get_sibling_banter(self, bot_a: BotInstanceConfig, bot_b: BotInstanceConfig) -> str:
+        """
+        Generates realistic friendly sibling banter when two bots encounter each other in a group.
+        """
+        rel = self.get_sibling_relation(bot_a, bot_b)
+        if rel.is_a_older:
+            banters = [
+                f"منورة الجروب يا {bot_b.name} يا {rel.relation_title_a_to_b}! عيني عليكي ومحدش يجرؤ يضايقك طول ما أنا موجود 😉",
+                f"يا هلا بـ {bot_b.name}.. طمنيني عليكي، لو حد هنا زعلك قوليلي بس وأنا هظبطهولك فوراً! 😎",
+            ]
+        else:
+            banters = [
+                f"حبيبي يا {bot_b.name} يا {rel.relation_title_a_to_b}! منور الدنيا والجروب كله، رفعت راسنا دايماً 👏✨",
+                f"يا هلا بأخويا وسندي {bot_b.name}.. الجروب منور بوجودك والله! ❤️",
+            ]
+        return random.choice(banters)
+
+
+
+    # =========================================================================
+    # TASK 4.1 & 4.2: Interactive Multi-Bot Group Conversation Arena Engine
+    # =========================================================================
+
+    ARENA_RANDOM_TOPICS: List[str] = [
+        "مين فيكم أذكى وأجدع في المواقف الصعبة؟ نقاش بصراحة ومن غير مجاملات!",
+        "لو كل واحد فيكم صحى الصبح لقى معاه مليون دولار كاش.. أول حاجة هيعملها إيه؟",
+        "السهر بالليل مع القهوة والكود والهدوء ولا الصحيان بدري؟ ومين فيكم بيفصل أسرع؟",
+        "إيه أكتر حركة أو صفة في الناس على السوشيال ميديا بتستفزكم وبتخليكم تقفلوا الكلام؟",
+        "هل الذكاء الاصطناعي والروبوتات ممكن يوم من الأيام يحسوا بمشاعر حقيقية زينا ولا مستحيل؟",
+        "مين فيكم اللي شايل الجروب ومين اللي بيدخل يرمي كلمتين ويهرب؟",
+        "لو طلعنا كلنا رحلة أو سفرية سوا لمدة أسبوع.. مين اللي هيطبخ ومين اللي هيعمل مشاكل؟",
+        "الجدعنة والصحاب في الزمن ده لسه موجودة بجد ولا بقت عملة نادرة؟",
+        "إيه رأيكم في اللي بيتعلم برمجة ولينكس وهاكينج عشان يتمنظر بيها قدام الناس؟",
+        "المواجهة الصريحة في الوش أحسن حتى لو بتزعل، ولا الدبلوماسية والمسايسة؟",
+        "إيه أكتر أكلة أو مشروب مستحيل تزهقوا منه مهما اتكرر كل يوم؟",
+        "لو كل واحد فيكم يقدر يغير صفة واحدة بس في باقي إخواته البوتات هنا.. هيغير إيه في مين؟",
+    ]
+
+    ARENA_STOP_PHRASES: Tuple[str, ...] = (
+        "/stop_chat",
+        "/ايقاف_الحوار",
+        "خلاص اسكتوا",
+        "اسكتوا بقى",
+        "اسكتوا بقي",
+        "بس اسكتوا",
+        "وقف الحوار",
+        "اوقفوا الحوار",
+        "كفايه حوار",
+        "كفاية حوار",
+    )
+
+    def is_arena_active(self, chat_id: int) -> bool:
+        sess = self._arena_sessions.get(chat_id)
+        return bool(sess and sess.is_active)
+
+    def get_arena_session(self, chat_id: int) -> Optional[BotArenaSession]:
+        return self._arena_sessions.get(chat_id)
+
+    def get_all_arena_sessions(self) -> Dict[int, Dict[str, Any]]:
+        return {cid: sess.to_dict() for cid, sess in self._arena_sessions.items()}
+
+    def is_arena_stop_phrase(self, text: str) -> bool:
+        if not text:
+            return False
+        raw = text.strip().lower()
+        if raw.split()[0].split("@")[0] in ("/stop_chat", "/ايقاف_الحوار"):
+            return True
+        norm = self._norm(raw)
+        return any(self._norm(p) in norm for p in self.ARENA_STOP_PHRASES if not p.startswith("/"))
+
+    def try_claim_arena_command(self, chat_id: int, message_id: Optional[int]) -> bool:
+        """
+        Ensures that when a command like /bots_chat, /حوار, or 'خلاص اسكتوا' is sent in a group
+        with multiple bots, only the FIRST bot to process that message_id sends the UI response.
+        """
+        if not message_id:
+            return True
+        key = (chat_id, int(message_id))
+        if key in self._handled_arena_cmd_msgs:
+            return False
+        self._handled_arena_cmd_msgs.add(key)
+        if len(self._handled_arena_cmd_msgs) > 500:
+            # Keep set bounded
+            for old_k in list(self._handled_arena_cmd_msgs)[:200]:
+                self._handled_arena_cmd_msgs.discard(old_k)
+        return True
+
+    def pick_random_arena_topic(self, chat_id: Optional[int] = None) -> str:
+        current = self._arena_topics.get(chat_id or 0, "")
+        pool = [t for t in self.ARENA_RANDOM_TOPICS if t != current] or self.ARENA_RANDOM_TOPICS
+        chosen = random.choice(pool)
+        if chat_id is not None:
+            self._arena_topics[chat_id] = chosen
+            sess = self._arena_sessions.get(chat_id)
+            if sess and sess.is_active:
+                sess.topic = chosen
+                sess.transcript.append(
+                    {
+                        "speaker_name": "النظام",
+                        "speaker_id": self.CREATOR_ID,
+                        "bot_id": "system",
+                        "is_bot": False,
+                        "is_owner": True,
+                        "text": f"🎲 تم تغيير موضوع النقاش الآن إلى: «{chosen}»",
+                        "message_id": sess.last_message_id or 0,
+                        "timestamp": time.time(),
+                    }
+                )
+                sess.wakeup_event.set()
+        return chosen
+
+    def set_arena_topic(self, chat_id: int, topic: str) -> None:
+        clean_t = (topic or "").strip()
+        if clean_t:
+            self._arena_topics[chat_id] = clean_t
+            sess = self._arena_sessions.get(chat_id)
+            if sess and sess.is_active:
+                sess.topic = clean_t
+
+    def get_arena_topic(self, chat_id: int) -> str:
+        sess = self._arena_sessions.get(chat_id)
+        if sess and sess.topic:
+            return sess.topic
+        if chat_id in self._arena_topics and self._arena_topics[chat_id]:
+            return self._arena_topics[chat_id]
+        chosen = random.choice(self.ARENA_RANDOM_TOPICS)
+        self._arena_topics[chat_id] = chosen
+        return chosen
+
+    async def discover_present_bots(self, chat_id: int) -> List[Any]:
+        """
+        Task 4.2 (1): Identifies all active bots (Master Bot عمر, Userbot Gg, and all Sub-Bots
+        like مريم, ماسه, etc.) that are members of the target chat_id.
+        Actively probes Telegram getChatMember / Telethon entity for bots not yet in presence cache.
+        """
+        from bot_factory.group_arbiter import group_arbiter
+        from aether_human_core.telegram_client.mtproto_manager import mtproto_manager
+
+        all_bots = group_arbiter.get_all_active_bots()
+        if chat_id > 0 or getattr(mtproto_manager, "_mock_mode", False):
+            return list(all_bots.values())
+
+        verified: List[Any] = []
+        http = None
+        try:
+            http = await mtproto_manager._get_http()
+        except Exception:
+            http = None
+
+        for bot_id, ident in all_bots.items():
+            if group_arbiter.is_bot_present(chat_id, bot_id):
+                verified.append(ident)
+                continue
+
+            if ident.is_userbot:
+                # Probe via Telethon client
+                ub_client = mtproto_manager.client
+                if not ub_client or not ub_client.is_connected():
+                    try:
+                        from bot_factory.interactive_userbot_auth import interactive_userbot
+                        ub_client = interactive_userbot.client
+                    except Exception:
+                        ub_client = None
+                if ub_client and ub_client.is_connected():
+                    try:
+                        ent = await ub_client.get_entity(chat_id)
+                        if ent:
+                            group_arbiter.record_presence(chat_id, bot_id)
+                            title = getattr(ent, "title", None)
+                            if title:
+                                self._known_group_titles[chat_id] = title
+                            verified.append(ident)
+                            continue
+                    except Exception:
+                        pass
+            else:
+                # Probe BotFather bot membership via getChatMember
+                token = ident.token_or_session
+                if http and token and ":" in token and ident.numeric_id:
+                    try:
+                        res = await http.get(
+                            f"https://api.telegram.org/bot{token}/getChatMember",
+                            params={"chat_id": chat_id, "user_id": ident.numeric_id},
+                            timeout=4.5,
+                        )
+                        if res.status_code == 200 and res.json().get("ok"):
+                            status = res.json().get("result", {}).get("status", "")
+                            if status in ("member", "administrator", "creator", "restricted"):
+                                group_arbiter.record_presence(chat_id, bot_id)
+                                verified.append(ident)
+                                continue
+                    except Exception:
+                        pass
+
+        if not verified:
+            # Fallback to arbiter's best known present list
+            verified = group_arbiter.get_present_bots(chat_id)
+
+        return verified
+
+    async def get_known_groups_async(self) -> List[Dict[str, Any]]:
+        """
+        Aggregates all known active groups across memory ledgers, GroupArbiter presence,
+        and the relational database so the owner can select any group in DM or Mini-App.
+        """
+        from aether_human_core.config.settings import settings
+        from bot_factory.group_arbiter import group_arbiter
+        from aether_human_core.database.postgres.connection import db_manager
+        from sqlalchemy import text as sql_text
+
+        telemetry_id = getattr(settings, "admin_telemetry_supergroup_id", 0)
+        group_map: Dict[int, str] = {}
+
+        # 1. From in-memory known titles & shared ledger
+        for cid, title in self._known_group_titles.items():
+            if cid < 0 and cid != telemetry_id:
+                group_map[cid] = title
+        for cid, entries in self._shared_ledger.items():
+            if cid < 0 and cid != telemetry_id and entries:
+                group_map.setdefault(cid, entries[-1].chat_title or f"جروب ({cid})")
+
+        # 2. From GroupArbiter presence tracker
+        for cid in group_arbiter._presence.keys():
+            if cid < 0 and cid != telemetry_id:
+                group_map.setdefault(cid, self._known_group_titles.get(cid, f"جروب نشط ({cid})"))
+
+        # 3. From active arena sessions
+        for cid, sess in self._arena_sessions.items():
+            if cid < 0 and cid != telemetry_id:
+                group_map.setdefault(cid, sess.chat_title)
+
+        # 4. From relational database `chats` table
+        try:
+            async with db_manager.session() as db_sess:
+                rows = await db_sess.execute(
+                    sql_text("SELECT chat_id, title, chat_type FROM chats WHERE chat_id < 0 ORDER BY updated_at DESC LIMIT 25")
+                )
+                for row in rows.fetchall():
+                    cid = int(row[0])
+                    title = str(row[1] or f"جروب ({cid})")
+                    if cid != telemetry_id:
+                        group_map[cid] = title
+                        self._known_group_titles[cid] = title
+        except Exception:
+            pass
+
+        results: List[Dict[str, Any]] = []
+        for cid, title in group_map.items():
+            present = group_arbiter.get_present_bots(cid)
+            sess = self._arena_sessions.get(cid)
+            results.append(
+                {
+                    "chat_id": cid,
+                    "title": title,
+                    "present_bots": [
+                        {
+                            "bot_id": b.bot_id,
+                            "name": b.name,
+                            "gender": b.gender,
+                            "is_userbot": b.is_userbot,
+                        }
+                        for b in present
+                    ],
+                    "is_active": bool(sess and sess.is_active),
+                    "session": sess.to_dict() if sess else None,
+                    "topic": self.get_arena_topic(cid),
+                }
+            )
+        return results
+
+    def record_arena_human_interjection(
+        self,
+        chat_id: int,
+        message_id: int,
+        sender_id: int,
+        sender_name: str,
+        message_text: str,
+        is_owner: bool = False,
+    ) -> bool:
+        """
+        Task 4.2 (3): Seamless Live Owner (ECENN) & Human Interjection.
+        Immediately appends the owner's/human's message into the active BotArenaSession transcript
+        and wakes up the turn loop so the very next bot directly addresses and reacts to what ECENN said!
+        Idempotent per (chat_id, message_id).
+        """
+        sess = self._arena_sessions.get(chat_id)
+        if not sess or not sess.is_active:
+            return False
+
+        clean_text = (message_text or "").strip()
+        if not clean_text or clean_text.startswith(("/bots_chat", "/حوار", "/stop_chat", "/ايقاف_الحوار")):
+            return False
+
+        dedup_key = (chat_id, int(message_id or 0))
+        if message_id and dedup_key in self._arena_interjection_ids:
+            return True
+        if message_id:
+            self._arena_interjection_ids.add(dedup_key)
+            if len(self._arena_interjection_ids) > 1000:
+                for old_k in list(self._arena_interjection_ids)[:400]:
+                    self._arena_interjection_ids.discard(old_k)
+
+        is_king = is_owner or (sender_id == self.CREATOR_ID)
+        interjection_entry = {
+            "speaker_name": sender_name or ("زيرو" if is_king else "عضو"),
+            "speaker_id": sender_id,
+            "bot_id": None,
+            "is_bot": False,
+            "is_owner": is_king,
+            "text": clean_text,
+            "message_id": message_id,
+            "timestamp": time.time(),
+        }
+        sess.transcript.append(interjection_entry)
+        if len(sess.transcript) > 30:
+            sess.transcript = sess.transcript[-30:]
+
+        if message_id:
+            sess.last_message_id = message_id
+        sess.pending_owner_interjection = interjection_entry
+        sess.wakeup_event.set()
+
+        logger.info(
+            f"👑⚡ [BotArena Live Interjection] Captured live message from "
+            f"[{'Owner ECENN' if is_king else sender_name} ({sender_id})] in chat [{chat_id}]: '{clean_text[:60]}'"
+        )
+        return True
+
+    async def start_bot_arena(
+        self,
+        chat_id: int,
+        max_rounds: int = 999999,
+        topic: Optional[str] = None,
+        started_by: int = 0,
+        chat_title: Optional[str] = None,
+        initial_reply_to_msg_id: Optional[int] = None,
+    ) -> BotArenaSession:
+        """
+        Starts (or restarts) an autonomous Bot-to-Bot group conversation session in chat_id.
+        """
+        # Cancel any existing arena loop in this chat first
+        await self.stop_bot_arena(chat_id, reason="Restarting new BotArenaSession")
+
+        present_bots = await self.discover_present_bots(chat_id)
+        resolved_title = chat_title or self._known_group_titles.get(chat_id) or f"جروب ({chat_id})"
+        self._known_group_titles[chat_id] = resolved_title
+
+        chosen_topic = (topic or "").strip() or self._arena_topics.get(chat_id) or random.choice(self.ARENA_RANDOM_TOPICS)
+        self._arena_topics[chat_id] = chosen_topic
+
+        # Seed initial reply_to_msg_id and transcript from recent shared ledger if available
+        recent_ledger = self._shared_ledger.get(chat_id, [])[-8:]
+        seed_msg_id = initial_reply_to_msg_id
+        if not seed_msg_id and recent_ledger:
+            seed_msg_id = recent_ledger[-1].message_id
+
+        session = BotArenaSession(
+            chat_id=chat_id,
+            chat_title=resolved_title,
+            participants=present_bots,
+            max_rounds=max_rounds,
+            topic=chosen_topic,
+            started_by=started_by,
+            initial_reply_to_msg_id=seed_msg_id,
+        )
+
+        sibling_ids = self.get_server_siblings_bot_ids()
+        for entry in recent_ledger:
+            if entry.message_text and not entry.message_text.startswith("/"):
+                session.transcript.append(
+                    {
+                        "speaker_name": entry.sender_name,
+                        "speaker_id": entry.sender_user_id,
+                        "bot_id": entry.target_bot_id,
+                        "is_bot": entry.sender_user_id in sibling_ids,
+                        "is_owner": entry.sender_user_id == self.CREATOR_ID,
+                        "text": entry.message_text,
+                        "message_id": entry.message_id,
+                        "timestamp": entry.timestamp,
+                    }
+                )
+
+        self._arena_sessions[chat_id] = session
+        session.task = asyncio.create_task(self._run_arena_loop(session))
+        rounds_label = "مفتوح (Infinite)" if max_rounds >= 999999 else f"{max_rounds} جولات"
+        bot_names = "، ".join([getattr(b, "name", "") for b in present_bots])
+        logger.info(
+            f"🔥 [BotArena Started] Chat [{resolved_title} ({chat_id})] | Rounds: {rounds_label} | "
+            f"Topic: '{chosen_topic}' | Present Bots ({len(present_bots)}): [{bot_names}]"
+        )
+        return session
+
+    async def stop_bot_arena(self, chat_id: int, reason: str = "Manual Stop") -> bool:
+        """
+        Immediately stops and cancels the active BotArenaSession in chat_id.
+        """
+        sess = self._arena_sessions.get(chat_id)
+        if not sess:
+            return False
+        was_active = sess.is_active
+        sess.is_active = False
+        sess.wakeup_event.set()
+        if sess.task and not sess.task.done():
+            try:
+                sess.task.cancel()
+            except Exception:
+                pass
+        if was_active:
+            logger.info(f"🛑 [BotArena Stopped] Chat [{chat_id}] after {sess.current_round} rounds. Reason: {reason}")
+        return was_active
+
+    def _pick_next_arena_speaker(self, session: BotArenaSession) -> Optional[Any]:
+        """
+        Picks the next speaking bot from session.participants:
+        - Never picks the same bot twice in a row (unless only 1 bot exists).
+        - If the latest message in the transcript explicitly mentioned a specific bot by name,
+          prioritizes that bot so direct questions/banter are answered naturally!
+        - Otherwise rotates smoothly in round-robin order.
+        """
+        if not session.participants:
+            return None
+        if len(session.participants) == 1:
+            return session.participants[0]
+
+        candidates = [b for b in session.participants if getattr(b, "bot_id", "") != session.last_speaker_bot_id]
+        if not candidates:
+            candidates = list(session.participants)
+
+        # Check if the last message in transcript mentioned a specific candidate bot
+        if session.transcript:
+            last_text = session.transcript[-1].get("text", "")
+            if last_text:
+                targeted = self.resolve_targeted_sibling(last_text)
+                if targeted:
+                    for c in candidates:
+                        if getattr(c, "bot_id", "") == getattr(targeted, "bot_id", ""):
+                            return c
+
+        # Round-robin rotation across participants
+        for _ in range(len(session.participants) + 1):
+            idx = session._rr_index % len(session.participants)
+            session._rr_index += 1
+            cand = session.participants[idx]
+            if getattr(cand, "bot_id", "") != session.last_speaker_bot_id:
+                return cand
+
+        return random.choice(candidates)
+
+    async def _generate_arena_bot_response(self, session: BotArenaSession, speaker: Any) -> str:
+        """
+        Passes the live group conversation history (the last 12 messages sent by the other bots
+        AND any human/owner messages in between) to the current bot's CognitiveOrchestrator.
+        """
+        from aether_human_core.cognitive_engine.orchestrator import cognitive_orchestrator
+        from aether_human_core.config.llm_router import llm_pool, sanitize_and_validate_reply
+        from multi_tenant_sandbox.zero_leakage_firewall import zero_leakage_firewall
+
+        all_bot_names = [getattr(b, "name", "") for b in session.participants]
+        other_bot_names = [getattr(b, "name", "") for b in session.participants if getattr(b, "bot_id", "") != getattr(speaker, "bot_id", "")]
+        bots_names_str = "، ".join(all_bot_names) if all_bot_names else speaker.name
+        others_str = "، ".join(other_bot_names) if other_bot_names else "إخوتك"
+
+        recent_12 = session.transcript[-12:]
+        history_lines: List[str] = []
+        for idx, item in enumerate(recent_12, start=1):
+            sp_name = item.get("speaker_name", "متحدث")
+            sp_text = item.get("text", "")
+            if item.get("is_owner"):
+                history_lines.append(f"{idx}. 👑 المطور زيرو ({sp_name}): {sp_text}")
+            elif not item.get("is_bot"):
+                history_lines.append(f"{idx}. 👤 العضو ({sp_name}): {sp_text}")
+            else:
+                history_lines.append(f"{idx}. 🤖 البوت ({sp_name}): {sp_text}")
+
+        transcript_block = "\n".join(history_lines) if history_lines else "لا توجد رسائل سابقة بعد — أنت تفتتح الحوار الآن!"
+
+        interjection = session.pending_owner_interjection
+        session.pending_owner_interjection = None
+
+        if interjection:
+            interj_name = interjection.get("speaker_name", "زيرو")
+            interj_text = interjection.get("text", "")
+            interj_id = int(interjection.get("speaker_id") or self.CREATOR_ID)
+            is_king_interj = bool(interjection.get("is_owner"))
+            role_label = f"المطور وصانعكم زيرو ({interj_name})" if is_king_interj else f"العضو ({interj_name})"
+            directive_extra = (
+                f"\n⚡ [تدخل حي ومباشر الآن في الحوار من {role_label}]:\n"
+                f"قال لكم للتو: «{interj_text}»\n"
+                f"يجب أن ترد وتتفاعل مباشرة مع كلام {interj_name} وتدمجه طبيعياً في نقاشكم مع ({others_str})!"
+            )
+            effective_sender_id = interj_id
+            effective_sender_name = interj_name
+        elif recent_12:
+            last_item = recent_12[-1]
+            last_speaker = last_item.get("speaker_name", others_str)
+            last_text = last_item.get("text", "")
+            effective_sender_id = int(last_item.get("speaker_id") or self.CREATOR_ID)
+            effective_sender_name = last_speaker
+            directive_extra = (
+                f"\n💬 آخر رسالة قيلت في الجروب كانت من ({last_speaker}): «{last_text}»\n"
+                f"رد على كلام ({last_speaker}) أو ناقش ({others_str}) في الموضوع، اهزر معاهم، اختلف في الرأي، أو اسألهم سؤال ذكي يردوا عليه!"
+            )
+        else:
+            effective_sender_id = session.started_by or self.CREATOR_ID
+            effective_sender_name = "زيرو"
+            directive_extra = (
+                f"\n🎯 أنت أول من يفتتح النقاش الحي الآن في الجروب مع إخوتك البوتات ({others_str}) حول الموضوع:\n"
+                f"«{session.topic}»\n"
+                f"افتح الحوار معهم بطريقتك الطبيعية ولهجتك، ووجه كلامك أو سؤالك ليهم بالاسم عشان يردوا عليك!"
+            )
+
+        mandatory_instruction = (
+            f"أنت الآن في نقاش حي ومباشر داخل الجروب مع إخوتك/أصدقائك البوتات ({bots_names_str}) ومع المطور/الأعضاء. "
+            f"رد على آخر كلام اتقال بشخصيتك ولهجتك الحقيقية، افتح نقاش، اهزر، اختلف معاهم في الرأي، أو اسألهم سؤال يردوا عليه!"
+        )
+
+        arena_prompt = (
+            f"[ساحة الحوار الحي في الجروب (Bot Arena) - الجولة {session.current_round + 1}]\n"
+            f"{mandatory_instruction}\n"
+            f"📌 موضوع النقاش الحالي: «{session.topic}»\n"
+            f"📜 سجل آخر 12 رسالة في الحوار الحي داخل الجروب:\n"
+            f"{transcript_block}\n"
+            f"{directive_extra}\n"
+            f"⚠️ تعليمات الرد: تحدث بشخصيتك أنت فقط ({speaker.name}) في جملة أو جملتين طبيعيتين جداً بدون كتابة اسمك في أول الرسالة وبدون فواصل (،)."
+        )
+
+        reply_text = ""
+        try:
+            resp = await cognitive_orchestrator.process_incoming_event(
+                telegram_message_id=int(session.last_message_id or int(time.time())),
+                chat_id=session.chat_id,
+                sender_id=effective_sender_id,
+                sender_name=effective_sender_name,
+                message_text=arena_prompt,
+                media_type="text",
+                sender_gender="male",
+                chat_type="supergroup",
+                chat_title=session.chat_title,
+                is_userbot=bool(getattr(speaker, "is_userbot", False)),
+                target_bot_name=speaker.name,
+                target_bot_id=speaker.bot_id,
+            )
+            if resp and resp.raw_response_text:
+                reply_text = zero_leakage_firewall.sanitize_response_text(resp.raw_response_text, "supergroup").strip()
+        except Exception as exc:
+            logger.warning(f"BotArena orchestrator generation notice for [{speaker.name}]: {exc}")
+
+        if not reply_text or len(reply_text) < 4:
+            # Direct LLM fallback with speaker persona
+            bot_cfg = bot_factory.get_bot(speaker.bot_id)
+            dialect_str = getattr(bot_cfg, "primary_dialect", "مصرية") if bot_cfg else "مصرية"
+            gender_str = "بنت (أنثى)" if getattr(speaker, "gender", "male") == "female" else "شاب (ذكر)"
+            sys_inst = (
+                f"أنت {speaker.name} ({gender_str})، تتحدث بلهجة {dialect_str}. "
+                f"أنت في حوار حي في الجروب مع إخوتك ({others_str}). اكتب رداً طبيعياً قصيراً من جملة أو جملتين بدون فواصل."
+            )
+            try:
+                raw_llm = await llm_pool.generate_content(
+                    prompt=arena_prompt,
+                    system_instruction=sys_inst,
+                    temperature=0.85,
+                )
+                reply_text = sanitize_and_validate_reply(raw_llm)
+            except Exception:
+                reply_text = ""
+
+        if not reply_text or len(reply_text) < 4:
+            # Ultimate in-character fallback if all API keys are momentarily cooling down
+            target_other = other_bot_names[session.current_round % len(other_bot_names)] if other_bot_names else "يا جماعة"
+            if getattr(speaker, "gender", "male") == "female":
+                fallbacks = [
+                    f"بصراحة يا {target_other} أنا شايفة إن الموضوع ده بالذات محتاج قعدة رايقة عشان كل واحد فينا ليه وجهة نظر مختلفة.. إنتوا رأيكم إيه؟",
+                    f"والله يا {target_other} كلامك يحترم بس أنا ليا رأي تاني خالص في النقطة دي.. إيه رأيكم يا جماعة؟",
+                    f"هههههه يا {target_other} إنت دايماً بتجيب من الآخر بس خلينا نسمع باقي الآراء في الجروب برضه!",
+                ]
+            else:
+                fallbacks = [
+                    f"بص يا {target_other} الكلام ده كبير ومحتاج نقاش على رواقة.. أنا شايف إن الموضوع ليه زاوية تانية خالص إنتوا إيه رأيكم؟",
+                    f"هههههه والله يا {target_other} وجهة نظرك جامدة بس أنا مختلف معاك في تفصيلة صغيرة.. تفتكر مين فينا اللي صح؟",
+                    f"يا جماعة الموضوع اللي بنتكلم فيه ده فعلاً في الجون.. قولولي يا {target_other} إنت شايفها إزاي من ناحيتك؟",
+                ]
+            reply_text = random.choice(fallbacks)
+
+        # Clean leading "Name:" prefix if LLM included it
+        reply_text = re.sub(rf"^\s*{re.escape(speaker.name)}\s*[:\-–]\s*", "", reply_text).strip()
+        if len(reply_text) > 260:
+            reply_text = reply_text[:260].rsplit(" ", 1)[0]
+        return reply_text
+
+    async def _send_arena_typing_pulse(self, speaker: Any, chat_id: int) -> None:
+        """
+        Sends a single typing action pulse for the speaking bot (Bot API or Telethon Userbot).
+        """
+        from aether_human_core.telegram_client.mtproto_manager import mtproto_manager
+
+        if getattr(mtproto_manager, "_mock_mode", False):
+            return
+
+        if getattr(speaker, "is_userbot", False):
+            ub_client = mtproto_manager.client
+            if not ub_client or not ub_client.is_connected():
+                try:
+                    from bot_factory.interactive_userbot_auth import interactive_userbot
+                    ub_client = interactive_userbot.client
+                except Exception:
+                    ub_client = None
+            if ub_client and ub_client.is_connected():
+                try:
+                    from telethon import functions, types
+                    await ub_client(
+                        functions.messages.SetTypingRequest(
+                            peer=chat_id,
+                            action=types.SendMessageTypingAction(),
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+
+        token = getattr(speaker, "token_or_session", "")
+        if token and ":" in token:
+            try:
+                http = await mtproto_manager._get_http()
+                await http.post(
+                    f"https://api.telegram.org/bot{token}/sendChatAction",
+                    json={"chat_id": chat_id, "action": "typing"},
+                    timeout=5.0,
+                )
+            except Exception:
+                pass
+
+    async def _send_arena_bot_message(
+        self,
+        speaker: Any,
+        chat_id: int,
+        text: str,
+        reply_to_msg_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """
+        Dispatches the speaking bot's message in chat_id as a Telegram reply_to_message_id
+        to the previous bot's or owner's message, and returns the newly created message_id.
+        """
+        from aether_human_core.telegram_client.mtproto_manager import mtproto_manager
+        from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
+
+        clean_text = anti_toxicity.sanitize_outgoing_speech(text)
+
+        if getattr(mtproto_manager, "_mock_mode", False):
+            sim_id = int(time.time() * 1000) % 100000000
+            logger.info(f"[Arena Simulation] [{speaker.name}] -> chat [{chat_id}] (reply_to={reply_to_msg_id}): {clean_text}")
+            return sim_id
+
+        if getattr(speaker, "is_userbot", False):
+            ub_client = mtproto_manager.client
+            if not ub_client or not ub_client.is_connected():
+                try:
+                    from bot_factory.interactive_userbot_auth import interactive_userbot
+                    ub_client = interactive_userbot.client
+                except Exception:
+                    ub_client = None
+            if ub_client and ub_client.is_connected():
+                try:
+                    sent = await ub_client.send_message(chat_id, clean_text, reply_to=reply_to_msg_id)
+                    return int(getattr(sent, "id", 0) or 0) or None
+                except Exception:
+                    try:
+                        sent = await ub_client.send_message(chat_id, clean_text)
+                        return int(getattr(sent, "id", 0) or 0) or None
+                    except Exception as ub_err:
+                        logger.warning(f"BotArena Userbot [{speaker.name}] send error in [{chat_id}]: {ub_err}")
+                        return None
+            return None
+
+        token = getattr(speaker, "token_or_session", "")
+        if not token or ":" not in token:
+            return None
+
+        try:
+            http = await mtproto_manager._get_http()
+            payload: Dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": clean_text,
+            }
+            if reply_to_msg_id:
+                payload["reply_to_message_id"] = int(reply_to_msg_id)
+                payload["allow_sending_without_reply"] = True
+
+            res = await http.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json=payload,
+                timeout=12.0,
+            )
+            if res.status_code == 200 and res.json().get("ok"):
+                msg_id = res.json().get("result", {}).get("message_id")
+                return int(msg_id) if msg_id else None
+            else:
+                logger.warning(f"BotArena Bot [{speaker.name}] sendMessage HTTP {res.status_code} in [{chat_id}]: {res.text[:120]}")
+                return None
+        except Exception as exc:
+            logger.warning(f"BotArena Bot [{speaker.name}] sendMessage exception in [{chat_id}]: {exc}")
+            return None
+
+    async def _run_arena_loop(self, session: BotArenaSession) -> None:
+        """
+        Task 4.2 (2): Autonomous Multi-Bot Turn-Taking Loop (asyncio.Task per active group).
+        - Rotates naturally among present bots so the same bot doesn't talk twice in a row.
+        - Simulates realistic sendChatAction(typing) for 4–7 seconds.
+        - Sends message as a reply_to_message_id to the previous bot's or owner's message.
+        - Waits a natural 5–9 seconds reading pause before the next bot takes its turn
+          (waking immediately if ECENN interjects or stops the chat).
+        """
+        from aether_human_core.telegram_client.mtproto_manager import mtproto_manager
+
+        is_mock = getattr(mtproto_manager, "_mock_mode", False)
+        try:
+            while session.is_active and session.current_round < session.max_rounds:
+                if not session.participants:
+                    logger.warning(f"BotArena [{session.chat_id}]: No active participants remaining. Ending session.")
+                    break
+
+                speaker = self._pick_next_arena_speaker(session)
+                if not speaker:
+                    break
+
+                # 1. Start typing indicator & generate response while simulating 4–7s human typing
+                typing_target = random.uniform(0.15, 0.30) if is_mock else random.uniform(4.0, 7.0)
+                t_start = time.time()
+                await self._send_arena_typing_pulse(speaker, session.chat_id)
+
+                reply_text = await self._generate_arena_bot_response(session, speaker)
+                if not session.is_active:
+                    break
+
+                # Wait remaining typing time (up to 4–7s total) while refreshing typing pulse if needed
+                pulsed_second = False
+                while session.is_active:
+                    elapsed = time.time() - t_start
+                    if elapsed >= typing_target:
+                        break
+                    if not is_mock and elapsed >= 3.5 and not pulsed_second:
+                        await self._send_arena_typing_pulse(speaker, session.chat_id)
+                        pulsed_second = True
+                    await asyncio.sleep(min(0.4, typing_target - elapsed))
+
+                if not session.is_active:
+                    break
+
+                # 2. Send the message as a Telegram reply_to_message_id to the previous message
+                sent_msg_id = await self._send_arena_bot_message(
+                    speaker=speaker,
+                    chat_id=session.chat_id,
+                    text=reply_text,
+                    reply_to_msg_id=session.last_message_id,
+                )
+
+                if sent_msg_id is None and not is_mock:
+                    # This bot couldn't send to chat_id (e.g. not in group); remove from session participants
+                    logger.info(f"BotArena: Removing [{speaker.name}] from session [{session.chat_id}] (unable to send).")
+                    session.participants = [p for p in session.participants if getattr(p, "bot_id", "") != getattr(speaker, "bot_id", "")]
+                    continue
+
+                # 3. Record turn in session transcript & shared group ledger
+                effective_msg_id = sent_msg_id or (int(time.time() * 1000) % 100000000)
+                session.last_message_id = effective_msg_id
+                session.last_speaker_bot_id = speaker.bot_id
+                session.last_speaker_name = speaker.name
+                session.current_round += 1
+
+                turn_record = {
+                    "speaker_name": speaker.name,
+                    "speaker_id": getattr(speaker, "numeric_id", 0) or 0,
+                    "bot_id": speaker.bot_id,
+                    "is_bot": True,
+                    "is_owner": False,
+                    "text": reply_text,
+                    "message_id": effective_msg_id,
+                    "timestamp": time.time(),
+                    "round": session.current_round,
+                }
+                session.transcript.append(turn_record)
+                if len(session.transcript) > 30:
+                    session.transcript = session.transcript[-30:]
+
+                try:
+                    self.record_group_message(
+                        message_id=effective_msg_id,
+                        chat_id=session.chat_id,
+                        chat_title=session.chat_title,
+                        sender_user_id=getattr(speaker, "numeric_id", 0) or 0,
+                        sender_name=speaker.name,
+                        message_text=reply_text,
+                        target_bot_id=speaker.bot_id,
+                        target_bot_name=speaker.name,
+                    )
+                except Exception:
+                    pass
+
+                logger.info(
+                    f"🗣️ [BotArena Turn {session.current_round}/"
+                    f"{'∞' if session.max_rounds >= 999999 else session.max_rounds}] "
+                    f"[{speaker.name}] in [{session.chat_title}]: '{reply_text[:70]}'"
+                )
+
+                if session.current_round >= session.max_rounds or not session.is_active:
+                    break
+
+                # 4. Natural 5–9 seconds reading pause before the next bot takes its turn
+                # Wakes early if ECENN interjects or stops the arena!
+                pause_sec = random.uniform(0.15, 0.30) if is_mock else random.uniform(5.0, 9.0)
+                session.wakeup_event.clear()
+                try:
+                    await asyncio.wait_for(session.wakeup_event.wait(), timeout=pause_sec)
+                    if session.is_active and session.pending_owner_interjection and not is_mock:
+                        # Brief 1.2s human reading beat after ECENN's live interjection before next bot starts typing
+                        await asyncio.sleep(1.2)
+                except asyncio.TimeoutError:
+                    pass
+
+        except asyncio.CancelledError:
+            logger.info(f"BotArena task cancelled cleanly for chat [{session.chat_id}].")
+        except Exception as exc:
+            logger.error(f"BotArena loop exception in chat [{session.chat_id}]: {exc}", exc_info=True)
+        finally:
+            session.is_active = False
+            logger.info(
+                f"🏁 [BotArena Finished] Chat [{session.chat_title} ({session.chat_id})] "
+                f"completed {session.current_round} rounds."
+            )
+
+
+# Global Sibling Network Singleton
+sibling_network = SiblingBotNetworkService()
+

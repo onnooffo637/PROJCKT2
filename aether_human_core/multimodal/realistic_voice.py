@@ -1,0 +1,677 @@
+"""
+Hyper-Realistic Human Voice Engine (Project Aether-Human)
+
+Architecture:
+Tier 1 (Primary - All Voice Notes & Live Calls):
+- Google Gemini Native Audio TTS (`gemini-3.8-flash-tts` / `gemini-2.5-flash-preview-tts`)
+- Voices: Female -> 'Aoede' (Zephyr for 'دلوعة' persona), Male -> 'Puck'
+- Strict gender lock across all engines
+- Clean Egyptian colloquial phone prompt (no diacritics, no phonetic replacement dictionaries)
+- One instant key retry on failure (skip cooldown keys immediately)
+- Smartphone DSP filter chain: highpass 75 Hz, lowpass 11500 Hz, volume 1.04 (guarded by VOICE_DSP_ENABLED)
+- Mandatory logging: [VOICE OK] engine=gemini voice=... ms=...
+
+Tier 2 (Final Fallback Only):
+- Edge-TTS with strict gender-locked parameters:
+  - Egyptian female: ar-EG-SalmaNeural (rate -5%, pitch +2Hz)
+  - Iraqi female: ar-IQ-RanaNeural (rate -4%, pitch +2Hz)
+  - Egyptian male: ar-EG-ShakirNeural (rate -4%, pitch +0Hz)
+  - Rate modifiers clamped to +-5%
+- Separate light colloquial pre-processor for Edge fallback only (ة -> ه, قوي -> أوي, عشان -> علشان)
+- Mandatory logging: [VOICE FALLBACK->EDGE] reason=... at WARNING level
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+import math
+import os
+import re
+import time
+from typing import Dict, List, Optional, Tuple
+
+import edge_tts
+import httpx
+import numpy as np
+import soundfile as sf
+
+from aether_human_core.config.settings import settings
+
+logger = logging.getLogger("Aether.Multimodal.RealisticVoice")
+
+# Comprehensive emoji and symbol stripper regex
+EMOJI_AND_SYMBOL_REGEX = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F700-\U0001F77F"  # alchemical symbols
+    "\U0001F780-\U0001F7FF"  # Geometric Shapes
+    "\U0001F800-\U0001F8FF"  # Supplemental Arrows
+    "\U0001F900-\U0001F9FF"  # Supplemental Symbols and Pictographs
+    "\U0001FA00-\U0001FA6F"  # Chess Symbols
+    "\U0001FA70-\U0001FAFF"  # Symbols and Pictographs Extended-A
+    "\U00002702-\U000027B0"  # Dingbats
+    "\U000024C2-\U0001F251"
+    "\U00002600-\U000026FF"  # Miscellaneous Symbols
+    "\U00002B00-\U00002BFF"  # Miscellaneous Symbols and Arrows
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def clean_for_human_speech(text: str, **kwargs) -> str:
+    """
+    Standard text cleaning used before TTS (Task A5):
+    1. Strip all Tashkeel: re.sub(r'[\u0617-\u061A\u064B-\u0652\u0670\u0640]', '', text)
+    2. Remove emojis and miscellaneous non-text symbols
+    3. Remove Latin handles and usernames (e.g. ECENN) -> replace with 'يا غالي'
+    4. Collapse repeated punctuation and repeated '...' into one pause
+    Note: NO phonetic replacement dictionaries are applied here (keeps text natural for Gemini).
+    """
+    if not text:
+        return ""
+
+    out = text
+
+    # 1. Strip all Tashkeel, Tanween, Shadda, Sukun, Tatweel
+    out = re.sub(r'[\u0617-\u061A\u064B-\u0652\u0670\u0640]', '', out)
+
+    # 2. Strip English Usernames & Latin handles (ECENN, Zero, @username, URLs)
+    out = re.sub(r'https?://\S+', ' ', out)
+    out = re.sub(r'(?i)\bيا\s+ECENN\b', 'يا غالي', out)
+    out = re.sub(r'(?i)\bECENN\b', 'يا غالي', out)
+    out = re.sub(r'(?i)\bzero\b', 'زيرو', out)
+    out = re.sub(r'(?i)\b(ok|okay)\b', 'تمام', out)
+    out = re.sub(r'(?i)\bbye\b', 'سلام', out)
+    out = re.sub(r'@[A-Za-z0-9_]+', 'يا غالي', out)
+    # Strip any remaining English / Latin characters so the model NEVER pronounces English words
+    out = re.sub(r'[A-Za-z]+', '', out)
+
+    # 3. Strip Emojis & Symbols
+    out = EMOJI_AND_SYMBOL_REGEX.sub(' ', out)
+    out = re.sub(r'[\*\_\[\]\(\)\{\}\~\`\>\<\|\#\+\=\/\\\^\@\$\%\&\"\']', ' ', out)
+
+    # 4. Collapse repeated punctuation and dots
+    out = re.sub(r'\.{2,}', '... ', out)
+    out = re.sub(r'[،,]{2,}', '، ', out)
+    out = re.sub(r'[؟!]{2,}', '؟ ', out)
+
+    # 5. Collapse letter stretching (>2 repeated chars -> 1)
+    out = re.sub(r'(.)\1{2,}', r'\1', out)
+
+    # 6. Normalize whitespace and clean repeated vocatives
+    out = re.sub(r'\bيا\s+يا\b', 'يا', out)
+    out = re.sub(r'\s+', ' ', out).strip()
+
+    # 7. Strip any leading punctuation or colons left over from stripped English preambles
+    out = re.sub(r'^[،,:\!\?\.\…\-\s]+', '', out).strip()
+    return out
+
+
+def clean_for_edge_fallback(text: str) -> str:
+    """
+    Separate light phonetic normalization applied ONLY to Edge-TTS fallback (Task A5):
+    - final ة -> ه before space or punctuation
+    - قوي -> أوي
+    - عشان -> علشان
+    (Never called on the Gemini branch).
+    """
+    if not text:
+        return ""
+    out = text
+    out = re.sub(r'(?<![\u0621-\u064A])([وف]?)عشان\b', r'\g<1>علشان', out)
+    out = re.sub(r'(?<![\u0621-\u064A])([وف]?)قوي\b', r'\g<1>أوي', out)
+    out = re.sub(r'ة(?=\s|$|[،.؟!…])', 'ه', out)
+    return out
+
+
+class RealisticVoiceGenerator:
+    """
+    Hyper-Realistic 2-Tier Human Voice Engine:
+    Tier 1 (Primary): Google Gemini Native Audio TTS ('gemini-3.8-flash-tts' / 'gemini-2.5-flash-preview-tts')
+    Tier 2 (Fallback): Edge-TTS Neural Engine with strict gender locks and clamped prosody.
+    """
+
+    VOICE_CHARACTER = "ar-EG-SalmaNeural"
+
+    def __init__(self):
+        self.output_dir = os.path.join(os.getcwd(), "artifacts", "voice_notes")
+        os.makedirs(self.output_dir, exist_ok=True)
+        self._voice_cache: Dict[str, Tuple[str, bytes, int]] = {}
+        self._api_key_index: int = 0
+        self._keys_list: List[str] = settings.gemini_keys_list
+        self._key_cooldowns: Dict[str, float] = {}
+        # Clean stale temporary files older than 1 hour on startup
+        self.clean_cache_on_startup()
+
+    def clean_cache_on_startup(self) -> None:
+        """
+        Task A8: On startup delete only temp_*.wav, omar_voice_*.ogg, and *.mp3 older than 1 hour (3600s).
+        NEVER delete call greeting files (call_greeting_*.raw, pre-cached frames) or anything not matching.
+        """
+        try:
+            now = time.time()
+            one_hour_ago = now - 3600
+            if not os.path.exists(self.output_dir):
+                return
+            for fname in os.listdir(self.output_dir):
+                is_target = (
+                    (fname.startswith("temp_") and (fname.endswith(".wav") or fname.endswith(".mp3") or fname.endswith(".raw")))
+                    or (fname.startswith("omar_voice_") and fname.endswith(".ogg"))
+                    or (fname.endswith(".mp3") and not fname.startswith("call_greeting") and not fname.startswith("call_filler"))
+                )
+                if not is_target:
+                    continue
+                fpath = os.path.join(self.output_dir, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        if os.path.getmtime(fpath) < one_hour_ago:
+                            os.remove(fpath)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.debug(f"Cache cleanup notice: {e}")
+
+    @classmethod
+    def clean_for_human_speech(cls, text: str, **kwargs) -> str:
+        return clean_for_human_speech(text=text, **kwargs)
+
+    @classmethod
+    def clean_for_edge_fallback(cls, text: str) -> str:
+        return clean_for_edge_fallback(text)
+
+    @classmethod
+    def collapse_letter_stretching(cls, text: str) -> str:
+        if not text:
+            return ""
+        return re.sub(r"(.)\1{2,}", r"\1", text)
+
+    @classmethod
+    def resolve_bot_voice(
+        cls,
+        dialect_code: Optional[str] = "egyptian",
+        gender: str = "female",
+        voice_override: Optional[str] = None,
+        bot_name: Optional[str] = None,
+        bot_id: Optional[str] = None,
+    ) -> Tuple[str, str, str]:
+        """
+        Task A7: Resolves Edge-TTS fallback parameters with strict gender lock:
+        - Egyptian female: ar-EG-SalmaNeural (rate -5%, pitch +2Hz)
+        - Iraqi female: ar-IQ-RanaNeural (rate -4%, pitch +2Hz)
+        - Syrian female: ar-SY-AmanyNeural (rate -4%, pitch +2Hz)
+        - Egyptian male: ar-EG-ShakirNeural (rate -4%, pitch +0Hz)
+        - Syrian male: ar-SY-LaithNeural (rate -4%, pitch +0Hz)
+        Female bot NEVER gets Shakir/Laith/Bassel; Male bot NEVER gets Salma/Rana/Amany.
+        """
+        b_name = (bot_name or "").lower().strip()
+        b_id = (bot_id or "").lower().strip()
+        g = (gender or "female").lower().strip()
+        d = (dialect_code or "egyptian").lower().strip()
+
+        is_female = (
+            g in ("female", "girl", "woman", "أنثى", "بنت")
+            or any(k in b_name for k in ["ريمي", "مريم", "ماسه", "ماسة", "ملوكة", "ملوكه", "لوكا", "سارة", "ليلى", "نور", "reemy", "maryam", "female"])
+            or any(k in b_id for k in ["userbot", "reemy", "maryam", "female", "1793564427271", "1793633133088", "1793725567511"])
+            or (voice_override and any(k in voice_override.lower() for k in ["salma", "rana", "amany", "zariyah"]))
+        )
+
+        if is_female:
+            if voice_override and not any(m in voice_override.lower() for m in ["shakir", "laith", "bassel", "hamed"]):
+                return voice_override, "-5%", "+2Hz"
+            if any(k in d for k in ["عراق", "iraq", "بغداد"]) or any(k in b_name for k in ["ماسه", "ماسة"]):
+                return "ar-IQ-RanaNeural", "-4%", "+2Hz"
+            elif any(k in d for k in ["شام", "سوري", "لبنان", "syria"]):
+                return "ar-SY-AmanyNeural", "-4%", "+2Hz"
+            else:
+                return "ar-EG-SalmaNeural", "-5%", "+2Hz"
+        else:
+            if voice_override and not any(f in voice_override.lower() for f in ["salma", "rana", "amany", "zariyah"]):
+                return voice_override, "-4%", "+0Hz"
+            if any(k in d for k in ["عراق", "iraq"]):
+                return "ar-IQ-BasselNeural", "-4%", "+0Hz"
+            elif any(k in d for k in ["شام", "سوري"]):
+                return "ar-SY-LaithNeural", "-4%", "+0Hz"
+            else:
+                return "ar-EG-ShakirNeural", "-4%", "+0Hz"
+
+    @classmethod
+    def clamp_rate_modifier(cls, rate_val: int) -> int:
+        """Task A7: Clamp the hormone/location rate modifiers to +-5% on the fallback."""
+        return max(-5, min(5, rate_val))
+
+    def _get_candidate_gemini_keys(self, count: int = 5, is_voip: bool = False) -> List[str]:
+        """Returns up to `count` non-cooldown keys from the rotation pool immediately (no sleeping)."""
+        if not self._keys_list:
+            return []
+        now = time.time()
+        pool_len = len(self._keys_list)
+        available: List[str] = []
+
+        # If in call mode, prioritize from the tail of the key pool (reserved priority keys)
+        indices = list(range(pool_len))
+        if is_voip:
+            indices = list(reversed(indices))
+
+        # Find non-cooldown keys
+        for offset in indices:
+            idx = (self._api_key_index + offset) % pool_len
+            k = self._keys_list[idx]
+            if self._key_cooldowns.get(k, 0.0) <= now:
+                available.append(k)
+                if len(available) >= count:
+                    break
+
+        # Fallback to any keys if all are marked cooled
+        if not available:
+            for i in range(min(count, pool_len)):
+                idx = (self._api_key_index + i) % pool_len
+                available.append(self._keys_list[idx])
+
+        self._api_key_index = (self._api_key_index + 1) % pool_len
+        return available
+
+    def _mark_key_cooldown(self, key: str, duration: float = 15.0) -> None:
+        self._key_cooldowns[key] = time.time() + duration
+
+    async def _generate_gemini_native_audio(
+        self,
+        clean_text: str,
+        gender: str,
+        dialect: str,
+        bot_name: str,
+        is_singing: bool = False,
+        voice_override: Optional[str] = None,
+        is_voip: bool = False,
+    ) -> Tuple[Optional[bytes], str, str]:
+        """
+        Tier 1: Google Gemini Native Audio TTS API.
+        Returns: (audio_bytes, mime_type, voice_used)
+        """
+        is_fem = (
+            str(gender).lower() in ("female", "girl", "woman", "أنثى", "بنت")
+            or any(k in (bot_name or "").lower() for k in ["ريمي", "مريم", "ماسه", "ماسة", "ملوكة", "ملوكه", "لوكا", "سارة", "ليلى", "نور", "reemy", "maryam", "female"])
+            or any(k in (voice_override or "").lower() for k in ["salma", "rana", "amany", "zariyah", "female"])
+        )
+
+        # Task A3: Voice selection with strict gender lock
+        if is_fem:
+            # Zephyr for 'دلوعة' / romantic persona, Aoede for standard warm female
+            is_delooa = any(k in (bot_name or "").lower() for k in ["ملوكة", "ملوكه", "لوكا", "دلع", "دلوعة"])
+            gemini_voice = "Zephyr" if is_delooa else "Aoede"
+        else:
+            gemini_voice = "Puck"
+
+        # Pass pure colloquial Arabic text directly so Gemini TTS NEVER speaks English directives out loud
+        payload = {
+            "contents": [{"parts": [{"text": clean_text}]}],
+            "generationConfig": {
+                "responseModalities": ["AUDIO"],
+                "speechConfig": {
+                    "voiceConfig": {
+                        "prebuiltVoiceConfig": {
+                            "voiceName": gemini_voice
+                        }
+                    }
+                }
+            }
+        }
+
+        # Models in priority order: gemini-3.8-flash-tts first (returns WAV), gemini-2.5-flash-preview-tts fallback
+        candidate_models = ["gemini-3.8-flash-tts", "gemini-2.5-flash-preview-tts"]
+        keys_to_try = self._get_candidate_gemini_keys(count=5, is_voip=is_voip)
+        words_num = len(clean_text.split())
+        if is_singing or words_num > 35:
+            client_timeout = 35.0
+        elif is_voip or voice_override == "call":
+            client_timeout = 12.0
+        else:
+            client_timeout = 30.0
+
+        last_error_reason = "No available keys"
+        for key in keys_to_try:
+            for model in candidate_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+                try:
+                    async with httpx.AsyncClient(timeout=client_timeout) as client:
+                        resp = await client.post(url, json=payload)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            candidates = data.get("candidates", [])
+                            if candidates and "content" in candidates[0]:
+                                parts = candidates[0]["content"].get("parts", [])
+                                for p in parts:
+                                    inline = p.get("inlineData", {})
+                                    if inline and "data" in inline:
+                                        audio_bytes = base64.b64decode(inline["data"])
+                                        mime = inline.get("mimeType", "audio/wav")
+                                        if len(audio_bytes) > 1000:
+                                            return audio_bytes, mime, gemini_voice
+                            last_error_reason = f"{model}: Empty candidate audio parts"
+                        elif resp.status_code == 429:
+                            self._mark_key_cooldown(key, duration=60.0)
+                            last_error_reason = f"{model}: HTTP 429 rate limit"
+                            break  # Try next key immediately
+                        elif resp.status_code == 503:
+                            self._mark_key_cooldown(key, duration=2.0)
+                            last_error_reason = f"{model}: HTTP 503 transient overload"
+                            break
+                        else:
+                            last_error_reason = f"{model}: HTTP {resp.status_code}"
+                except Exception as exc:
+                    last_error_reason = f"{model}: {type(exc).__name__}: {exc}"
+
+        return None, "", last_error_reason
+
+    async def generate_human_voice(
+        self,
+        text_content: str = "",
+        emotional_tone: str = "WARM",
+        format_ext: str = "ogg",
+        dialect_code: Optional[str] = None,
+        is_singing: bool = False,
+        gender: str = "female",
+        voice_override: Optional[str] = None,
+        custom_pitch: Optional[int] = None,
+        custom_rate: Optional[int] = None,
+        is_voip: bool = False,
+        bot_name: Optional[str] = None,
+        bot_id: Optional[str] = None,
+        location_context: Optional[str] = None,
+        text: Optional[str] = None,
+        mood_state: Optional[str] = None,
+        energy_level: Optional[float] = None,
+        **kwargs,
+    ) -> Tuple[str, bytes, int]:
+        """
+        Unified 2-Tier Human Voice Generation (Task A2, A6, A7):
+        Tier 1: Google Gemini Native Multimodal Audio ('gemini-3.8-flash-tts')
+        Tier 2: Edge-TTS Fallback with strict gender locking and smartphone DSP filters.
+        """
+        t0 = time.time()
+        raw_text = text_content or text or ""
+        effective_dialect = (dialect_code or "egyptian").strip()
+        effective_name = bot_name or "عمر"
+
+        # Task A5: Clean text for Gemini Native (No diacritics, no phonetic replacement dictionaries)
+        clean_text = self.clean_for_human_speech(text=raw_text)
+        if not clean_text:
+            clean_text = "أيوة معاك أهو يا غالي"
+
+        cache_key = f"{gender}_{effective_name}_{is_singing}_{clean_text}"
+        if cache_key in self._voice_cache:
+            c_path, c_wf, c_dur = self._voice_cache[cache_key]
+            if os.path.exists(c_path) and os.path.getsize(c_path) > 300:
+                logger.info(f"⚡ [Voice Cache Hit] Returning pre-synthesized audio: {c_path}")
+                return c_path, c_wf, c_dur
+
+        ts = time.time_ns()
+        final_ogg = os.path.join(self.output_dir, f"voice_{ts}.ogg")
+
+        # -------------------------------------------------------------
+        # TIER 1: Gemini Native Audio TTS (Primary for voice notes AND calls)
+        # -------------------------------------------------------------
+        gemini_bytes, gemini_mime, gemini_voice_or_reason = await self._generate_gemini_native_audio(
+            clean_text=clean_text,
+            gender=gender,
+            dialect=effective_dialect,
+            bot_name=effective_name,
+            is_singing=is_singing,
+            voice_override=voice_override,
+            is_voip=is_voip,
+        )
+
+        if gemini_bytes:
+            gemini_voice = gemini_voice_or_reason
+            temp_input = os.path.join(self.output_dir, f"temp_gemini_{ts}.wav")
+            with open(temp_input, "wb") as f:
+                f.write(gemini_bytes)
+
+            is_pcm = "pcm" in gemini_mime.lower() or "l16" in gemini_mime.lower()
+            input_args = ["-f", "s16le", "-ar", "24000", "-ac", "1"] if is_pcm else []
+
+            # Task A6: Light smartphone DSP chain: highpass 75 Hz, lowpass 11500 Hz, volume 1.04
+            dsp_enabled = getattr(settings, "VOICE_DSP_ENABLED", True)
+            converted = False
+
+            if dsp_enabled:
+                try:
+                    ffmpeg_cmd = [
+                        "ffmpeg", "-y",
+                        *input_args,
+                        "-i", temp_input,
+                        "-af", "highpass=f=75,lowpass=f=11500,volume=1.04",
+                        "-ar", "48000",
+                        "-c:a", "libopus",
+                        "-b:a", "48k",
+                        "-vbr", "on",
+                        "-application", "voip",
+                        final_ogg,
+                    ]
+                    proc = await asyncio.create_subprocess_exec(
+                        *ffmpeg_cmd,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.communicate()
+                    if os.path.exists(final_ogg) and os.path.getsize(final_ogg) > 300:
+                        converted = True
+                except Exception:
+                    converted = False
+
+            # Fallback without filters if DSP was disabled or failed
+            if not converted:
+                try:
+                    ffmpeg_cmd_raw = [
+                        "ffmpeg", "-y",
+                        *input_args,
+                        "-i", temp_input,
+                        "-ar", "48000",
+                        "-c:a", "libopus",
+                        "-b:a", "48k",
+                        "-vbr", "on",
+                        "-application", "voip",
+                        final_ogg,
+                    ]
+                    proc = await asyncio.create_subprocess_exec(
+                        *ffmpeg_cmd_raw,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await proc.communicate()
+                except Exception as ff_err:
+                    logger.debug(f"FFmpeg conversion error: {ff_err}")
+
+            try:
+                if os.path.exists(temp_input):
+                    os.remove(temp_input)
+            except Exception:
+                pass
+
+            if os.path.exists(final_ogg) and os.path.getsize(final_ogg) > 300:
+                elapsed_ms = (time.time() - t0) * 1000
+                duration_sec = 2
+                try:
+                    info = sf.info(final_ogg)
+                    duration_sec = max(1, int(round(info.duration)))
+                except Exception:
+                    pass
+                waveform_bytes = self._extract_waveform_from_audio(final_ogg, num_bars=64)
+                self._voice_cache[cache_key] = (final_ogg, waveform_bytes, duration_sec)
+
+                # Task A2: Mandatory logging for success
+                logger.info(f"[VOICE OK] engine=gemini voice={gemini_voice} ms={elapsed_ms:.0f}")
+                return final_ogg, waveform_bytes, duration_sec
+
+        # -------------------------------------------------------------
+        # TIER 2: Edge-TTS Fallback (Final Fallback Only)
+        # -------------------------------------------------------------
+        fallback_reason = gemini_voice_or_reason if not gemini_bytes else "Conversion failure"
+        # Task A2: Mandatory warning log on fallback
+        logger.warning(f"[VOICE FALLBACK->EDGE] reason={fallback_reason}")
+
+        # Task A5: Separate light phonetic normalization for Edge only
+        edge_text = clean_for_edge_fallback(clean_text)
+
+        voice_id, def_rate, def_pitch = self.resolve_bot_voice(
+            dialect_code=effective_dialect,
+            gender=gender,
+            voice_override=voice_override,
+            bot_name=effective_name,
+            bot_id=bot_id,
+        )
+
+        temp_mp3 = os.path.join(self.output_dir, f"temp_{ts}.mp3")
+        communicate = edge_tts.Communicate(
+            text=edge_text,
+            voice=voice_id,
+            rate=def_rate,
+            pitch=def_pitch,
+        )
+        await communicate.save(temp_mp3)
+
+        if not os.path.exists(temp_mp3) or os.path.getsize(temp_mp3) < 300:
+            raise RuntimeError(f"Edge-TTS synthesis failed for voice {voice_id}")
+
+        dsp_enabled = getattr(settings, "VOICE_DSP_ENABLED", True)
+        edge_converted = False
+
+        if dsp_enabled:
+            try:
+                ffmpeg_cmd = [
+                    "ffmpeg", "-y",
+                    "-i", temp_mp3,
+                    "-af", "highpass=f=75,lowpass=f=11500,volume=1.04",
+                    "-ar", "48000",
+                    "-c:a", "libopus",
+                    "-b:a", "48k",
+                    "-vbr", "on",
+                    "-application", "voip",
+                    final_ogg,
+                ]
+                proc = await asyncio.create_subprocess_exec(
+                    *ffmpeg_cmd,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await proc.communicate()
+                if os.path.exists(final_ogg) and os.path.getsize(final_ogg) > 300:
+                    edge_converted = True
+            except Exception:
+                edge_converted = False
+
+        if not edge_converted:
+            ffmpeg_cmd_raw = [
+                "ffmpeg", "-y",
+                "-i", temp_mp3,
+                "-ar", "48000",
+                "-c:a", "libopus",
+                "-b:a", "48k",
+                "-vbr", "on",
+                "-application", "voip",
+                final_ogg,
+            ]
+            proc = await asyncio.create_subprocess_exec(
+                *ffmpeg_cmd_raw,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.communicate()
+
+        try:
+            if os.path.exists(temp_mp3):
+                os.remove(temp_mp3)
+        except Exception:
+            pass
+
+        target_file = final_ogg if (os.path.exists(final_ogg) and os.path.getsize(final_ogg) > 300) else temp_mp3
+        duration_sec = 2
+        try:
+            info = sf.info(target_file)
+            duration_sec = max(1, int(round(info.duration)))
+        except Exception:
+            pass
+
+        waveform_bytes = self._extract_waveform_from_audio(target_file, num_bars=64)
+        if os.path.exists(target_file) and os.path.getsize(target_file) > 300:
+            self._voice_cache[cache_key] = (target_file, waveform_bytes, duration_sec)
+            if len(self._voice_cache) > 100:
+                self._voice_cache.pop(next(iter(self._voice_cache)))
+
+        return target_file, waveform_bytes, duration_sec
+
+    async def generate_voice_note(self, *args, **kwargs) -> Tuple[str, bytes, int]:
+        return await self.generate_human_voice(*args, **kwargs)
+
+    def _extract_waveform_from_audio(self, audio_path: str, num_bars: int = 64) -> bytes:
+        try:
+            data, _ = sf.read(audio_path)
+            if len(data.shape) > 1:
+                data = data.mean(axis=1)
+
+            total_samples = len(data)
+            if total_samples == 0:
+                return bytes([12] * num_bars)
+
+            chunk_size = max(1, total_samples // num_bars)
+            bars: List[float] = []
+
+            for i in range(num_bars):
+                chunk = data[i * chunk_size : (i + 1) * chunk_size]
+                rms = float(np.sqrt(np.mean(chunk**2))) if len(chunk) > 0 else 0.0
+                bars.append(rms)
+
+            max_rms = max(bars) if max(bars) > 0 else 1.0
+            quantized_bars = [min(31, max(1, int((b / max_rms) * 31))) for b in bars]
+            return bytes(quantized_bars)
+        except Exception:
+            bars = [min(31, max(3, int(15 + 10 * math.sin(i * 0.3)))) for i in range(num_bars)]
+            return bytes(bars)
+
+
+# Singleton instance
+RealisticVoice = RealisticVoiceGenerator
+voice_generator = RealisticVoiceGenerator()
+realistic_voice_generator = voice_generator
+
+
+async def synthesize_voice(
+    text: str,
+    persona: str = "female",
+    mode: str = "note",
+    gender: Optional[str] = None,
+    **kwargs,
+) -> Tuple[str, bytes, int]:
+    """
+    Task B2: Unified voice synthesis entrypoint for both voice notes and live calls:
+    synthesize_voice(text, persona, mode="call" | "note")
+    """
+    kwargs.pop("gender", None)
+    if not gender:
+        is_fem = (persona.lower() in ("female", "girl", "woman", "ريمي", "مريم", "ماسه", "ماسة", "ملوكة", "ملوكه", "لوكا"))
+        gender = "female" if is_fem else "male"
+    else:
+        gender = "female" if "female" in str(gender).lower() else "male"
+
+    return await voice_generator.generate_human_voice(
+        text_content=text,
+        gender=gender,
+        is_voip=(mode == "call"),
+        bot_name=persona,
+        **kwargs,
+    )
+
+
+__all__ = [
+    "clean_for_human_speech",
+    "clean_for_edge_fallback",
+    "RealisticVoiceGenerator",
+    "RealisticVoice",
+    "voice_generator",
+    "realistic_voice_generator",
+    "synthesize_voice",
+    "EMOJI_AND_SYMBOL_REGEX",
+]

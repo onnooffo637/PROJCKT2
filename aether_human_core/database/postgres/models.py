@@ -77,11 +77,13 @@ class ChatModel(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     chat_id = Column(BigInteger, unique=True, nullable=False, index=True)
+    telegram_id = Column(BigInteger, nullable=True, index=True)
     title = Column(String(256), nullable=True)
     chat_type = Column(String(32), nullable=False, default="private")  # private, group, supergroup
     is_active = Column(Boolean, nullable=False, default=True)
     participant_count = Column(Integer, nullable=True, default=0)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     last_message_at = Column(DateTime, nullable=True)
 
     messages = relationship("MessageRecordModel", back_populates="chat", cascade="all, delete-orphan")

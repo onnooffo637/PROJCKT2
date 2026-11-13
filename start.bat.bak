@@ -1,0 +1,26 @@
+@echo off
+chcp 65001 > nul
+title Project Aether-Human Core Engine
+echo ===================================================
+echo   Starting Project Aether-Human Core Engine...
+echo ===================================================
+
+cd /d "%~dp0"
+set PYTHONIOENCODING=utf-8
+
+:: Free port 8000 if occupied by a previous orphaned run
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr :8000 ^| findstr LISTENING') do (
+    taskkill /F /PID %%a >nul 2>&1
+)
+
+if exist ".venv\Scripts\python.exe" (
+    ".venv\Scripts\python.exe" main.py
+) else (
+    python main.py
+)
+
+if %errorlevel% neq 0 (
+    echo.
+    echo [ERROR] The program terminated unexpectedly with error code %errorlevel%.
+    pause
+)

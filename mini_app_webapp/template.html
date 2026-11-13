@@ -1,0 +1,2562 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Omar Aether Mini App 3.0 & AetherGram Mod</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --bg-base: #0b0f19;
+            --bg-card: rgba(18, 26, 43, 0.75);
+            --bg-card-hover: rgba(28, 40, 65, 0.85);
+            --border-card: rgba(255, 255, 255, 0.08);
+            --neon-blue: #00d2ff;
+            --neon-purple: #9d4edd;
+            --neon-pink: #ff2a85;
+            --neon-green: #00f59b;
+            --neon-yellow: #ffd166;
+            --neon-red: #ff4757;
+            --text-main: #f0f4f8;
+            --text-muted: #8b9bb4;
+            --nav-height: 64px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Cairo", sans-serif; -webkit-tap-highlight-color: transparent; }
+        body { background: var(--bg-base); color: var(--text-main); min-height: 100vh; padding-bottom: 80px; overflow-x: hidden; user-select: none; }
+
+        .glass { background: var(--bg-card); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid var(--border-card); border-radius: 16px; }
+        header { position: sticky; top: 0; z-index: 50; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; border-radius: 0 0 16px 16px; }
+        .brand { display: flex; align-items: center; gap: 12px; }
+        .avatar-wrap { position: relative; width: 44px; height: 44px; border-radius: 50%; overflow: hidden; border: 2px solid var(--neon-blue); }
+        .avatar-wrap img { width: 100%; height: 100%; object-fit: cover; }
+        .live-dot { position: absolute; bottom: 2px; right: 2px; width: 10px; height: 10px; background: var(--neon-green); border-radius: 50%; border: 2px solid var(--bg-base); }
+        .brand-text h1 { font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px; }
+        .brand-text p { font-size: 11px; color: var(--text-muted); }
+        .circadian-pill { font-size: 12px; background: rgba(0, 210, 255, 0.1); border: 1px solid rgba(0, 210, 255, 0.25); color: var(--neon-blue); padding: 4px 10px; border-radius: 20px; display: flex; align-items: center; gap: 6px; font-weight: 600; }
+
+        .container { padding: 16px; max-width: 600px; margin: 0 auto; }
+        .view-section { display: none !important; }
+        .view-section.active { display: block !important; animation: fadeIn 0.25s ease forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+        .card { padding: 16px; margin-bottom: 14px; position: relative; overflow: hidden; }
+        .card-title { font-size: 14px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; color: #fff; }
+
+        /* Radar Bars */
+        .radar-bar { margin-bottom: 10px; }
+        .radar-label { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; color: var(--text-muted); }
+        .bar-bg { height: 7px; background: rgba(255,255,255,0.06); border-radius: 4px; overflow: hidden; }
+        .bar-fill { height: 100%; border-radius: 4px; transition: width 0.6s ease; }
+        .fill-dopamine { background: linear-gradient(90deg, #ff9900, #ff5500); }
+        .fill-oxytocin { background: linear-gradient(90deg, #ff2a85, #ff70a6); }
+        .fill-cortisol { background: linear-gradient(90deg, #ff4757, #ff6b81); }
+        .fill-serotonin { background: linear-gradient(90deg, #00d2ff, #00f59b); }
+
+        /* Pill Subtabs */
+        .pill-nav { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 14px; scrollbar-width: none; }
+        .pill-nav::-webkit-scrollbar { display: none; }
+        .pill-btn { background: rgba(255,255,255,0.05); border: 1px solid var(--border-card); color: var(--text-muted); padding: 7px 14px; border-radius: 20px; font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; transition: all 0.2s; }
+        .pill-btn.active { background: linear-gradient(135deg, rgba(0,210,255,0.2), rgba(157,78,221,0.2)); border-color: var(--neon-blue); color: #fff; }
+
+        /* Buttons & Inputs */
+        .btn-action { background: linear-gradient(135deg, var(--neon-blue), var(--neon-purple)); border: none; color: #fff; padding: 10px 16px; border-radius: 12px; font-size: 13px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; transition: opacity 0.2s; }
+        .btn-action:active { opacity: 0.8; }
+        .btn-danger { background: linear-gradient(135deg, #ff4757, #ff6b81); }
+        .btn-success { background: linear-gradient(135deg, #00b894, #00f59b); color: #000; }
+        .input-glass { width: 100%; padding: 10px 14px; background: rgba(255,255,255,0.04); border: 1px solid var(--border-card); border-radius: 12px; color: #fff; font-size: 13px; margin-bottom: 10px; outline: none; }
+        .input-glass:focus { border-color: var(--neon-blue); }
+        textarea.input-glass { resize: vertical; min-height: 80px; }
+        select.input-glass { background: #131a2a; }
+
+        /* Bottom Nav */
+        .tab-bar { position: fixed; bottom: 10px; left: 12px; right: 12px; height: 58px; background: rgba(14, 22, 33, 0.88); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 24px; display: flex; justify-content: space-around; align-items: center; z-index: 100; padding: 0 6px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6); }
+        .tab-btn { background: none; border: none; color: var(--text-muted); display: flex; flex-direction: column; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; flex: 1; height: 100%; cursor: pointer; transition: all 0.2s; }
+        .tab-btn .icon { font-size: 19px; margin-bottom: 2px; }
+        .tab-btn.active { color: var(--neon-blue); }
+        .king-only { display: none; }
+
+        /* Factory Bot Cards */
+        .factory-bot-card { border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border-card); display: flex; justify-content: space-between; align-items: center; }
+        .bot-meta h4 { font-size: 14px; color: #fff; margin-bottom: 2px; }
+        .bot-meta p { font-size: 11px; color: var(--text-muted); }
+        .bot-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+        .btn-small { padding: 5px 9px; font-size: 11px; border-radius: 8px; border: 1px solid var(--border-card); background: rgba(255,255,255,0.06); color: #fff; cursor: pointer; }
+        .btn-gender-male { color: var(--neon-blue); border-color: rgba(0, 210, 255, 0.4); }
+        .btn-gender-female { color: var(--neon-purple); border-color: rgba(157, 78, 221, 0.4); }
+
+        /* AetherGram Mod Specific Styles */
+        .mod-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border-card); }
+        .mod-chat-item { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; cursor: pointer; transition: background 0.15s; margin-bottom: 6px; border: 1px solid transparent; }
+        .mod-chat-item:hover, .mod-chat-item.active { background: rgba(0, 210, 255, 0.08); border-color: rgba(0, 210, 255, 0.3); }
+        .mod-avatar { width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #4a00e0, #8e2de2); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 15px; color: #fff; flex-shrink: 0; }
+        .mod-bubble { padding: 9px 13px; border-radius: 14px; margin-bottom: 8px; max-width: 85%; font-size: 13px; line-height: 1.4; position: relative; }
+        .mod-bubble.out { background: #2b5278; margin-right: auto; border-bottom-left-radius: 4px; }
+        .mod-bubble.in { background: #182533; margin-left: auto; border-bottom-right-radius: 4px; border: 1px solid var(--border-card); }
+        .mod-bubble.deleted { border: 1.5px solid var(--neon-red) !important; background: rgba(255, 71, 87, 0.12) !important; }
+        .mod-bubble.edited { border: 1px solid var(--neon-yellow) !important; }
+        .mod-tag-del { color: var(--neon-red); font-size: 10px; font-weight: 700; display: block; margin-bottom: 3px; }
+        .mod-tag-edit { color: var(--neon-yellow); font-size: 10px; display: block; margin-top: 4px; font-style: italic; }
+        .keypad-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 14px 0; }
+        .key-btn { background: rgba(255,255,255,0.06); border: 1px solid var(--border-card); color: #fff; font-size: 18px; font-weight: 700; padding: 12px; border-radius: 12px; cursor: pointer; }
+        .key-btn:active { background: var(--neon-blue); color: #000; }
+        .otp-display { font-size: 26px; letter-spacing: 12px; text-align: center; color: var(--neon-blue); font-weight: 800; padding: 10px; background: rgba(0,0,0,0.3); border-radius: 12px; margin-bottom: 12px; }
+
+        /* Game Grids */
+        .xo-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; max-width: 280px; margin: 16px auto; }
+        .xo-cell { aspect-ratio: 1; background: rgba(255, 255, 255, 0.05); border: 1px solid var(--border-card); border-radius: 14px; font-size: 32px; font-weight: 800; display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .c4-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; background: #081b2e; padding: 10px; border-radius: 14px; max-width: 320px; margin: 10px auto; }
+        .c4-cell { aspect-ratio: 1; background: #050e18; border-radius: 50%; cursor: pointer; }
+
+        /* Theatrical Debate Stage */
+        .debate-turn-box { display: flex; gap: 10px; margin-bottom: 12px; align-items: flex-start; }
+        .debate-turn-box.side-left { flex-direction: row; }
+        .debate-turn-box.side-right { flex-direction: row-reverse; }
+        .debate-avatar { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+        .side-left .debate-avatar { background: linear-gradient(135deg, #00d2ff, #0055ff); box-shadow: 0 0 10px rgba(0,210,255,0.4); }
+        .side-right .debate-avatar { background: linear-gradient(135deg, #ff007f, #aa00ff); box-shadow: 0 0 10px rgba(255,0,127,0.4); }
+        .debate-bubble { padding: 10px 14px; border-radius: 16px; font-size: 13px; line-height: 1.45; max-width: 82%; }
+        .side-left .debate-bubble { background: rgba(0, 150, 255, 0.15); border: 1px solid rgba(0, 210, 255, 0.4); border-top-left-radius: 4px; color: #fff; }
+        .side-right .debate-bubble { background: rgba(255, 0, 128, 0.15); border: 1px solid rgba(255, 0, 128, 0.4); border-top-right-radius: 4px; color: #fff; text-align: right; }
+        .debate-speaker-title { font-weight: 700; font-size: 11px; margin-bottom: 4px; opacity: 0.9; }
+        .side-left .debate-speaker-title { color: var(--neon-blue); }
+        .side-right .debate-speaker-title { color: var(--neon-pink); }
+        .debate-verdict-card { background: linear-gradient(135deg, rgba(255, 215, 0, 0.14), rgba(255, 140, 0, 0.08)); border: 1.5px solid #ffd700; border-radius: 16px; padding: 14px; margin-top: 14px; text-align: center; box-shadow: 0 0 20px rgba(255, 215, 0, 0.25); }
+        .debate-verdict-title { font-size: 14px; font-weight: 800; color: #ffd700; margin-bottom: 6px; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .debate-verdict-body { font-size: 13px; color: #f0f0f0; line-height: 1.5; font-style: italic; }
+
+        /* Cyber-Obsidian & Emerald Glass Themes */
+        body.theme-cyber-cyan { --bg-base: #090D16; --border-card: rgba(0, 245, 212, 0.2); }
+        body.theme-emerald { --bg-base: #061A14; --border-card: rgba(16, 185, 129, 0.2); }
+        body.theme-crimson { --bg-base: #18090C; --border-card: rgba(239, 68, 68, 0.2); }
+        body.theme-native { --bg-base: #0e1621; --border-card: rgba(36, 129, 204, 0.2); }
+
+        .tg-avatar-img { width: 42px; height: 42px; border-radius: 50%; object-fit: cover; border: 1.5px solid #00F5D4; cursor: pointer; flex-shrink: 0; background: #17212b; }
+        .power-pill { padding: 5px 11px; font-size: 11px; font-weight: 700; border-radius: 12px; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); color: #fff; cursor: pointer; white-space: nowrap; transition: all 0.2s; display: inline-flex; align-items: center; gap: 4px; }
+        .power-pill:hover, .power-pill.active { background: #00F5D4; color: #000; border-color: #00F5D4; }
+        .chat-power-bar { display: flex; gap: 6px; padding: 6px 12px; background: rgba(14, 22, 33, 0.95); border-bottom: 1px solid rgba(255,255,255,0.06); overflow-x: auto; scrollbar-width: none; flex-shrink: 0; }
+        .chat-power-bar::-webkit-scrollbar { display: none; }
+        .seen-check { color: #00F5D4; font-weight: 800; font-size: 10px; margin-left: 4px; }
+
+        /* Telegram Plus Native Fullscreen Styles */
+        #view-aethergram.active { display: flex !important; flex-direction: column; position: fixed; top: 0; left: 0; right: 0; bottom: 70px; z-index: 90; background: #0e1621; overflow: hidden; padding: 0; margin: 0; border-radius: 0; }
+        .telegram-appbar { height: 54px; background: #17212b; display: flex; justify-content: space-between; align-items: center; padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; }
+        .telegram-folders { display: flex; gap: 6px; padding: 8px 12px; overflow-x: auto; scrollbar-width: none; background: #0e1621; border-bottom: 1px solid rgba(255,255,255,0.06); flex-shrink: 0; }
+        .telegram-folders::-webkit-scrollbar { display: none; }
+        .folder-pill { border-radius: 16px; padding: 6px 14px; font-size: 12px; font-weight: 700; color: #7f91a4; background: transparent; border: 1px solid transparent; cursor: pointer; display: flex; align-items: center; gap: 5px; white-space: nowrap; transition: all 0.2s; }
+        .folder-pill.active { background: #2b5278; color: #fff; }
+        .badge-counter { background: #5288c1; color: #fff; border-radius: 10px; padding: 1px 6px; font-size: 10px; font-weight: 800; }
+        .telegram-chat-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); cursor: pointer; transition: background 0.15s; }
+        .telegram-chat-item:hover, .telegram-chat-item:active { background: rgba(43,82,120,0.25); }
+        .tg-avatar { width: 46px; height: 46px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 700; color: #fff; flex-shrink: 0; background: linear-gradient(135deg, #4a00e0, #8e2de2); }
+        .chat-slideover { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #0e1621; display: flex; flex-direction: column; z-index: 95; }
+        .chat-slideover-header { height: 54px; background: #17212b; display: flex; justify-content: space-between; align-items: center; padding: 0 12px; border-bottom: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; }
+        .chat-slideover-body { flex: 1; overflow-y: auto; padding: 14px 12px; background: radial-gradient(circle at center, #0f1824 0%, #080d14 100%); display: flex; flex-direction: column; gap: 8px; }
+        .chat-slideover-footer { background: #17212b; padding: 8px 12px; display: flex; align-items: center; gap: 8px; border-top: 1px solid rgba(255,255,255,0.08); flex-shrink: 0; }
+        .audio-player-box { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; background: rgba(0,0,0,0.3); border-radius: 14px; }
+
+    </style>
+</head>
+<body>
+    <header class="glass">
+        <div class="brand">
+            <div class="avatar-wrap">
+                <img id="header-avatar-img" src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80" alt="Identity Avatar">
+                <div class="live-dot"></div>
+            </div>
+            <div class="brand-text">
+                <div style="display: flex; align-items: center; gap: 6px;">
+                    <h1 id="header-brand-title">Aether Core 3.0</h1>
+                    <select id="header-bot-switcher" onchange="switchActiveBot(this.value)" style="display: none; background: rgba(0, 210, 255, 0.12); color: var(--neon-blue); border: 1px solid rgba(0, 210, 255, 0.35); border-radius: 10px; padding: 2px 6px; font-size: 10.5px; font-family: 'Cairo', sans-serif; font-weight: 700; cursor: pointer; outline: none; max-width: 125px;"></select>
+                </div>
+                <p id="persona-badge">جاري التحميل...</p>
+            </div>
+        </div>
+        <div class="circadian-pill" id="header-time-capsule" title="التوقيت المحلي لبلد البوت (محسوب من التوقيت العالمي UTC)">
+            <span id="header-country-flag">🌐</span>
+            <span id="circadian-clock">--:--</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- 1. Telemetry View -->
+        <section id="view-telemetry" class="view-section active">
+            <div class="card glass">
+                <div class="card-title">
+                    <span>🧠 رادار المزاج العصبي الحي</span>
+                    <span id="mood-label" style="font-size: 12px; color: var(--neon-green);">طبيعي ومتزن</span>
+                </div>
+                <div class="radar-bar">
+                    <div class="radar-label"><span>الدوبامين (الحماس والإثارة)</span><span id="val-dopamine">50%</span></div>
+                    <div class="bar-bg"><div id="bar-dopamine" class="bar-fill fill-dopamine" style="width: 50%;"></div></div>
+                </div>
+                <div class="radar-bar">
+                    <div class="radar-label"><span>الأوكسيتوسين (المعزة والارتباط)</span><span id="val-oxytocin">50%</span></div>
+                    <div class="bar-bg"><div id="bar-oxytocin" class="bar-fill fill-oxytocin" style="width: 50%;"></div></div>
+                </div>
+                <div class="radar-bar">
+                    <div class="radar-label"><span>الكورتيزول (التوتر والضغط)</span><span id="val-cortisol">20%</span></div>
+                    <div class="bar-bg"><div id="bar-cortisol" class="bar-fill fill-cortisol" style="width: 20%;"></div></div>
+                </div>
+                <div class="radar-bar">
+                    <div class="radar-label"><span>السيروتونين (الرضا والاستقرار)</span><span id="val-serotonin">65%</span></div>
+                    <div class="bar-bg"><div id="bar-serotonin" class="bar-fill fill-serotonin" style="width: 65%;"></div></div>
+                </div>
+            </div>
+
+            <div class="card glass">
+                <div class="card-title">👑 هويتك ومقامك السيادي</div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 13px;" id="user-rank-title">جاري التحديد...</span>
+                    <span id="user-tier-label" style="font-size: 11px; background: rgba(0,210,255,0.1); color: var(--neon-blue); padding: 3px 8px; border-radius: 8px;">عضو</span>
+                </div>
+                <div style="font-size: 12px; color: var(--text-muted);">
+                    رصيد التفضيل والمعزة: <strong id="user-affinity-score" style="color: var(--neon-green);">--/100</strong>
+                </div>
+            </div>
+        </section>
+
+        <!-- 2. Games Arena -->
+        <section id="view-games" class="view-section">
+            <div class="pill-nav">
+                <button class="pill-btn active" onclick="switchGameSubtab('sub-xo', this)">❌⭕ إكس أو (XO Pro)</button>
+                <button class="pill-btn" onclick="switchGameSubtab('sub-c4', this)">🔴 أربعة في صف (Connect 4)</button>
+                <button class="pill-btn" onclick="switchGameSubtab('sub-trivia', this)">🧠 مسابقة الذكاء (Trivia)</button>
+                <button class="pill-btn" onclick="switchGameSubtab('sub-guess', this)">🔢 خمن الرقم</button>
+                <button class="pill-btn" onclick="switchGameSubtab('sub-rps', this)">✊ حجرة ورقة مقص</button>
+            </div>
+
+            <div id="sub-xo" class="card glass">
+                <div class="card-title"><span>🎮 تحدي إكس أو (XO)</span><button class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="resetXO()">إعادة 🔄</button></div>
+                <div id="xo-status" style="font-size: 12px; text-align: center; color: var(--neon-blue); margin-bottom: 8px;">دورك! اضغط على أي خانة (أنت X)</div>
+                <div class="xo-grid" id="xo-board"></div>
+            </div>
+
+            <div id="sub-c4" class="card glass" style="display: none;">
+                <div class="card-title"><span>🔴 أربعة في صف (Connect 4)</span><button class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="resetC4()">إعادة 🔄</button></div>
+                <div id="c4-status" style="font-size: 12px; text-align: center; color: var(--neon-blue); margin-bottom: 8px;">دورك! اضغط على العمود لإسقاط القرص الأحمر 🔴</div>
+                <div class="c4-grid" id="c4-board"></div>
+            </div>
+
+            <div id="sub-trivia" class="card glass" style="display: none;">
+                <div class="card-title"><span>🧠 بنك المعلومات والتحدي</span><span id="trivia-streak" style="font-size: 12px; color: var(--neon-yellow);">🔥 السلسلة: 0</span></div>
+                <div id="trivia-question" style="font-size: 14px; font-weight: 700; margin-bottom: 14px; line-height: 1.4;">جاري تحميل السؤال...</div>
+                <div id="trivia-options" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+
+            <div id="sub-guess" class="card glass" style="display: none;">
+                <div class="card-title"><span>🔢 خمن الرقم السري (1 - 100)</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">عمر اختار رقماً في عقله، اكتب تخمينك وسيرشدك هل رقمه أكبر أم أصغر!</p>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                    <input type="number" id="guess-input" class="input-glass" placeholder="اكتب رقماً من 1 إلى 100" style="margin-bottom: 0;">
+                    <button class="btn-action" onclick="submitGuess()">إرسال 🚀</button>
+                </div>
+                <div id="guess-feedback" style="font-size: 12.5px; font-weight: 700;"></div>
+            </div>
+
+            <div id="sub-rps" class="card glass" style="display: none;">
+                <div class="card-title"><span>✊ حجرة ورقة مقص</span></div>
+                <div style="display: flex; justify-content: space-around; margin: 16px 0;">
+                    <button class="btn-action" style="font-size: 24px; padding: 14px 20px;" onclick="playRPS('rock')">✊</button>
+                    <button class="btn-action" style="font-size: 24px; padding: 14px 20px;" onclick="playRPS('paper')">✋</button>
+                    <button class="btn-action" style="font-size: 24px; padding: 14px 20px;" onclick="playRPS('scissors')">✌️</button>
+                </div>
+                <div id="rps-result" style="text-align: center; font-size: 13px; font-weight: 700; color: var(--neon-blue);">اختر حركتك لمنافسة عمر!</div>
+            </div>
+        </section>
+
+        <!-- 3. Persona Studio & Custom Commands -->
+        <section id="view-persona-studio" class="view-section">
+            <div class="pill-nav">
+                <button class="pill-btn active" onclick="switchPersonaSubtab('sub-p-custom', this)">🎭 تفصيل الشخصية</button>
+                <button class="pill-btn" onclick="switchPersonaSubtab('sub-p-dna', this)">🧬 استنساخ الأسلوب</button>
+                <button class="pill-btn" onclick="switchPersonaSubtab('sub-p-cmds', this)">🪄 أوامري الخاصة</button>
+            </div>
+
+            <div id="sub-p-custom" class="card glass">
+                <div class="card-title"><span>🎭 استوديو شخصيتك المعزولة في الخاص</span></div>
+                <p style="font-size: 11.5px; color: var(--text-muted); margin-bottom: 12px;">هذه الإعدادات تنطبق عليك أنت وحدك في الشات الخاص، دون التأثير على الجروبات أو المستخدمين الآخرين.</p>
+                <label style="font-size: 11px; color: var(--text-muted);">اسم الشخصية:</label>
+                <input type="text" id="p-name" class="input-glass" placeholder="مثال: عمر، سارة، جارفيس">
+                <div style="display: flex; gap: 8px;">
+                    <div style="flex: 1;">
+                        <label style="font-size: 11px; color: var(--text-muted);">الجنس:</label>
+                        <select id="p-gender" class="input-glass">
+                            <option value="male">👦 ولد (ذكر)</option>
+                            <option value="female">👧 بنت (أنثى)</option>
+                        </select>
+                    </div>
+                    <div style="flex: 1;">
+                        <label style="font-size: 11px; color: var(--text-muted);">اللهجة الأساسية:</label>
+                        <select id="p-dialect" class="input-glass">
+                            <option value="egyptian_syrian">سورية ومصرية مختلطة</option>
+                            <option value="egyptian">مصرية قاهرية أصيلة</option>
+                            <option value="syrian">سورية شامية دافئة</option>
+                            <option value="saudi">سعودية بيضاء</option>
+                            <option value="kuwaiti">كويتية فخمة</option>
+                            <option value="iraqi">عراقية بغدادية</option>
+                            <option value="fusha">عربية فصحى معاصرة</option>
+                        </select>
+                    </div>
+                </div>
+                <label style="font-size: 11px; color: var(--text-muted);">الروح والنبرة النفسية:</label>
+                <select id="p-tone" class="input-glass">
+                    <option value="witty_and_warm">مرح، ذكي، وودود للغاية</option>
+                    <option value="philosophical">فلسفي، عميق، وهادئ</option>
+                    <option value="sarcastic_bro">جدع، ساخر بلطف، وأخوي</option>
+                    <option value="professional">تقني، دقيق، وجاد</option>
+                </select>
+                <label style="font-size: 11px; color: var(--text-muted);">توجيهات وبرومبت مخصص من عقلك:</label>
+                <textarea id="p-prompt" class="input-glass" placeholder="اكتب أي تعليمات خاصة يحفظها البوت معك دائماً"></textarea>
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn-action" style="flex: 1;" onclick="savePersonaConfig()">💾 حفظ وتطبيق شخصيتي</button>
+                    <button class="btn-action" style="background: rgba(255,255,255,0.08); border: 1px solid var(--border-card);" onclick="resetPersonaConfig()">🔄 استعادة عمر</button>
+                </div>
+                <div id="p-status" style="margin-top: 8px; font-size: 12px;"></div>
+            </div>
+
+            <div id="sub-p-dna" class="card glass" style="display: none;">
+                <div class="card-title"><span>🧬 استنساخ البصمة واللزمات اللغوية</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">ألصق نموذجاً من شات أو طريقة كلامك المعتادة، وسيقوم الذكاء الاصطناعي باستخراج بصمتك اللغوية ولزماتك الكلامية وتقمصها معك في الخاص بنسبة 100%!</p>
+                <textarea id="dna-sample-text" class="input-glass" style="min-height: 100px;" placeholder="ألصق نص محادثة أو كلام معتاد لك هنا..."></textarea>
+                <button class="btn-action" style="width: 100%;" onclick="cloneStyleDNA()">🧬 استنساخ بصمتي اللغوية الآن</button>
+                <div id="dna-result" style="margin-top: 12px; font-size: 12px;"></div>
+            </div>
+
+            <div id="sub-p-cmds" class="card glass" style="display: none;">
+                <div class="card-title"><span>🪄 أوامري الخاصة بالخاص</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">قم ببرمجة أوامرك الخاصة للرد عليك فورياً بكلمات مفتاحية مخصصة.</p>
+                <input type="text" id="cmd-trigger" class="input-glass" placeholder="الكلمة المفتاحية (مثال: أذكاري، جدولي، منبهي)">
+                <textarea id="cmd-template" class="input-glass" placeholder="الرد الذي سيرسله البوت فورياً"></textarea>
+                <button class="btn-action" style="width: 100%; margin-bottom: 14px;" onclick="addCustomCommand()">➕ إضافة الأمر الشخصي</button>
+                <div style="font-size: 12px; font-weight: 700; margin-bottom: 8px; color: var(--neon-blue);">قائمة أوامرك النشطة:</div>
+                <div id="cmds-list"></div>
+            </div>
+        </section>
+
+        <!-- 4. Memory Vault, Debate & Calls -->
+        <section id="view-vault-and-calls" class="view-section">
+            <div class="pill-nav">
+                <button class="pill-btn active" onclick="switchVaultSubtab('sub-v-capsule', this)">⏳ كبسولة الزمن والخزنة</button>
+                <button class="pill-btn" onclick="switchVaultSubtab('sub-v-debate', this)">👥 غرفة النقاش المزدوج</button>
+                <button class="pill-btn" onclick="switchVaultSubtab('sub-v-voice', this)">📞 المكالمات والإيقاظ</button>
+            </div>
+
+            <div id="sub-v-capsule" class="card glass">
+                <div class="card-title"><span>⏳ كبسولة الزمن المشفرة</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">اكتب رسالة أو وعداً لنفسك، وحدد موعداً ليقوم عمر بحفظها في كبسولة مقفلة وتذكيرك بها عند حلول الوقت!</p>
+                <textarea id="capsule-msg" class="input-glass" placeholder="اكتب رسالتك المستقبلية لنفسك..."></textarea>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                    <select id="capsule-hours" class="input-glass" style="flex: 1; margin-bottom: 0;">
+                        <option value="1">بعد 1 ساعة</option>
+                        <option value="24" selected>بعد 24 ساعة (يوم)</option>
+                        <option value="72">بعد 3 أيام</option>
+                        <option value="168">بعد أسبوع كامل</option>
+                        <option value="720">بعد شهر (30 يوم)</option>
+                    </select>
+                    <button class="btn-action" onclick="createTimeCapsule()">🔒 قفل الكبسولة</button>
+                </div>
+                <div id="capsule-status" style="font-size: 12px; margin-bottom: 12px;"></div>
+                <div style="font-size: 12px; font-weight: 700; color: var(--neon-yellow); margin-bottom: 8px;">كبسولاتك المحفوظة:</div>
+                <div id="capsules-list"></div>
+                <hr style="border: 0; border-top: 1px solid var(--border-card); margin: 14px 0;">
+                <div class="card-title"><span>🧠 إدارة ذاكرة الحوار</span><button class="btn-action" style="background: rgba(255, 71, 87, 0.2); border: 1px solid var(--neon-red); color: var(--neon-red);" onclick="clearMemoryVault()">🧹 تصفير ذاكرتي المؤقتة</button></div>
+            </div>
+
+            <div id="sub-v-debate" class="card glass" style="display: none;">
+                <div class="card-title"><span>🎭 مسرح المناظرات الثنائية (Theatrical Debate Stage)</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">أطلق مناظرة فكرية حية ومثيرة بين شخصيتين متناقضتين برؤى مختلفة ومحايدة مع حكم نهائي ذكي!</p>
+                
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 10px;">
+                    <div>
+                        <label style="font-size: 11px; color: var(--neon-blue);">الطرف الأول (الأزرق):</label>
+                        <input type="text" id="debate-persona-a" class="input-glass" value="عمر (المتفائل العبقري)" style="margin-bottom: 0;">
+                    </div>
+                    <div>
+                        <label style="font-size: 11px; color: var(--neon-pink);">الطرف الثاني (الوردي):</label>
+                        <input type="text" id="debate-persona-b" class="input-glass" value="سارة (الواقعية الساخرة)" style="margin-bottom: 0;">
+                    </div>
+                </div>
+
+                <label style="font-size: 11px; color: var(--text-muted);">موضوع المناظرة أو القضية الفلسفية:</label>
+                <input type="text" id="debate-topic" class="input-glass" placeholder="مثال: هل الذكاء الاصطناعي سيتفوق على المشاعر البشرية؟">
+
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
+                    <label style="font-size: 12px; color: #fff; display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                        <input type="checkbox" id="debate-send-tg" checked style="accent-color: var(--neon-blue);">
+                        <span>إرسال المناظرة لمحادثتي في تليجرام 📲</span>
+                    </label>
+                    <div style="display: flex; align-items: center; gap: 6px;">
+                        <span style="font-size: 11px; color: var(--text-muted);">الجولات:</span>
+                        <select id="debate-rounds" class="input-glass" style="width: auto; padding: 4px 8px; margin-bottom: 0;">
+                            <option value="2" selected>2 جولات</option>
+                            <option value="3">3 جولات</option>
+                            <option value="4">4 جولات</option>
+                        </select>
+                    </div>
+                </div>
+
+                <button class="btn-action" style="width: 100%; margin-bottom: 14px; background: linear-gradient(135deg, #00d2ff, #ff007f); font-weight: 700;" onclick="startDebate()">🔥 إشعال مسرح المناظرة</button>
+                <div id="debate-loading" style="display: none; text-align: center; font-size: 12px; color: var(--neon-yellow); margin-bottom: 10px;">🎭 الشخصيتان تستعدان على المسرح... جاري التوليد عبر Gemini ⏳</div>
+                <div id="debate-feed" style="display: flex; flex-direction: column; gap: 8px;"></div>
+            </div>
+
+            <div id="sub-v-voice" class="card glass" style="display: none;">
+                <div class="card-title"><span>📞 جدولة مكالمة هاتفية وإيقاظ صوتي</span></div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">اترك لعمر مهمة الاتصال بك على تليجرام وإيقاظك أو تذكيرك بموعد هام بصوت بشري واقعي!</p>
+                <label style="font-size: 11px; color: var(--text-muted);">موعد الاتصال (دقائق من الآن):</label>
+                <input type="number" id="voice-mins" class="input-glass" value="15" min="1">
+                <label style="font-size: 11px; color: var(--text-muted);">سبب المكالمة أو التذكير:</label>
+                <input type="text" id="voice-reason" class="input-glass" placeholder="مثال: صحيني لصلاة الفجر، أو موعد الامتحان">
+                <button class="btn-action" style="width: 100%;" onclick="scheduleVoiceCall()">📞 جدولة المكالمة الآن</button>
+                <div id="voice-status" style="margin-top: 10px; font-size: 12px;"></div>
+            </div>
+        </section>
+
+        <!-- 5. Leaderboard View -->
+        <section id="view-leaderboard" class="view-section">
+            <div class="card glass">
+                <div class="card-title">🏆 لوحة شرف المعزة والتفضيل</div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">المستخدمون الأكثر قرباً وتأثيراً في حياة عمر:</p>
+                <div id="leaderboard-list"></div>
+            </div>
+        </section>
+
+        <!-- 6. Research Lab -->
+        <section id="view-research" class="view-section">
+            <div class="card glass">
+                <div class="card-title">🔬 مختبر الأبحاث والأوراق العلمية</div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 10px;">ابحث في ملايين الأوراق العلمية (arXiv, PubMed, IEEE) بدقة وسرعة:</p>
+                <input type="text" id="research-query" class="input-glass" placeholder="اكتب عنوان البحث أو مجاله...">
+                <button class="btn-action" style="width: 100%;" onclick="sendResearchQuery()">🔍 تلخيص وتحليل البحث</button>
+                <div id="research-status" style="margin-top: 10px; font-size: 12px;"></div>
+            </div>
+        </section>
+
+        <!-- 7. Bot Factory (King Only) - Dedicated Bot & Userbot Creator -->
+        <section id="view-factory" class="view-section">
+
+            <!-- Task 4.1: حوار البوتات الحي في الجروبات (Bot Arena) Control Card -->
+            <div class="card glass" id="bot-arena-control-card" style="border: 1.5px solid rgba(0, 245, 155, 0.35); box-shadow: 0 0 24px rgba(0, 245, 155, 0.12);">
+                <div class="card-title">
+                    <span>🔥 حوار البوتات الحي في الجروبات (Bot Arena)</span>
+                    <span id="arena-live-badge" style="font-size: 11px; padding: 3px 9px; border-radius: 12px; background: rgba(255,255,255,0.08); color: var(--text-muted);">⚪ متوقف</span>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 12px;">
+                    اجعل البوتات المتواجدة في الجروب يتحاورون ويتناقشون ويهزرون مع بعضهم تلقائياً، مع إمكانية تدخلك الحي معهم في أي لحظة!
+                </p>
+
+                <label style="font-size: 11px; color: var(--neon-blue);">👥 اختر الجروب النشط (أو اكتب Chat ID الجروب):</label>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <select id="arena-group-select" class="input-glass" style="flex: 2; margin-bottom: 0;" onchange="onArenaGroupChange()">
+                        <option value="">-- اختر الجروب --</option>
+                    </select>
+                    <input type="text" id="arena-custom-chat-id" class="input-glass" style="flex: 1; margin-bottom: 0;" placeholder="-100123456789">
+                    <button class="pill-btn" style="padding: 6px 10px;" onclick="loadBotArenaStatus()" title="تحديث الجروبات">🔄</button>
+                </div>
+
+                <div id="arena-present-bots-box" style="font-size: 11.5px; color: var(--text-main); background: rgba(255,255,255,0.03); border: 1px solid var(--border-card); border-radius: 10px; padding: 8px 10px; margin-bottom: 10px;">
+                    🤖 <b>البوتات المتواجدة:</b> <span id="arena-present-bots-list" style="color: var(--neon-green);">اختر جروباً لعرض البوتات...</span>
+                </div>
+
+                <label style="font-size: 11px; color: var(--neon-yellow);">🎲 موضوع النقاش (اختياري — اتركه فارغاً لحوار عفوي أو اختر عشوائياً):</label>
+                <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                    <input type="text" id="arena-topic-input" class="input-glass" style="margin-bottom: 0; flex: 1;" placeholder="اكتب موضوعاً للنقاش أو اضغط 🎲 عشوائي...">
+                    <button class="btn-action" style="padding: 8px 12px; white-space: nowrap; background: linear-gradient(135deg, #9d4edd, #ff2a85);" onclick="pickRandomArenaTopic()">🎲 عشوائي</button>
+                </div>
+
+                <label style="font-size: 11px; color: var(--text-muted);">🎯 عدد جولات الحوار:</label>
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 12px;">
+                    <button type="button" class="pill-btn arena-round-btn" data-rounds="5" onclick="selectArenaRounds('5', this)">5 جولات</button>
+                    <button type="button" class="pill-btn arena-round-btn" data-rounds="10" onclick="selectArenaRounds('10', this)">10 جولات</button>
+                    <button type="button" class="pill-btn arena-round-btn" data-rounds="20" onclick="selectArenaRounds('20', this)">20 جولة</button>
+                    <button type="button" class="pill-btn arena-round-btn active" data-rounds="infinite" onclick="selectArenaRounds('infinite', this)">♾️ مفتوح</button>
+                </div>
+
+                <div style="display: flex; gap: 8px;">
+                    <button class="btn-action btn-success" style="flex: 1.4; font-size: 13.5px; font-weight: 800;" onclick="startBotArenaFromWebApp()">🔥 تشغيل حوار البوتات</button>
+                    <button class="btn-action btn-danger" style="flex: 1; font-size: 13px; font-weight: 800;" onclick="stopBotArenaFromWebApp()">🛑 إيقاف فوراً</button>
+                </div>
+
+                <div id="arena-status-feedback" style="margin-top: 10px; font-size: 12px; line-height: 1.5;"></div>
+            </div>
+
+            <div class="card glass">
+                <div class="card-title">
+                    <span>🏭 مصنع البوتات واليوزربوت المزدوج</span>
+                    <span style="font-size: 11px; color: var(--neon-yellow);">👑 حصري للملك</span>
+                </div>
+                <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
+                    أنشئ بوتات رسمية جديدة كلياً أو فعّل حسابات يوزربوت بشرية عبر الرقم ورمز OTP:
+                </p>
+
+                <!-- Sub-Navigation: Choose creation mode -->
+                <div class="pill-nav" style="margin-bottom: 14px;">
+                    <button class="pill-btn active" id="f-tab-btn-bot" onclick="switchFactoryCreateMode('bot')">🤖 إنشاء بوت رسمي (BotFather)</button>
+                    <button class="pill-btn" id="f-tab-btn-userbot" onclick="switchFactoryCreateMode('userbot')">👤 تفعيل يوزربوت جديد (بالرقم/الجلسة)</button>
+                </div>
+
+                <!-- Mode 1: Create Official Bot -->
+                <div id="f-mode-bot" style="display: block; background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+                    <div style="font-size: 13px; font-weight: 700; color: var(--neon-blue); margin-bottom: 8px;">🤖 إنشاء بوت رسمي جديد</div>
+                    <!-- 100% Dynamic Free-Text Form (Zero Restrictive Dropdowns) -->
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <input id="factory-bot-name" class="input-glass" style="flex: 2;" placeholder="اسم البوت بأي لغة أو رموز (مثال: ميسا 👑 / سارة / زين)">
+                        <select id="factory-bot-gender" class="input-glass" style="flex: 1;">
+                            <option value="FEMALE">👧 بنت (أنثى)</option>
+                            <option value="MALE">👦 ولد (ذكر)</option>
+                        </select>
+                    </div>
+                    <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                        <input id="factory-bot-role" class="input-glass" style="flex: 1;" placeholder="الدور / الشخصية (مثال: شاعرة حكيمة، رفيقة وفية، ذكاء فضائي)...">
+                        <input id="factory-bot-age" type="number" class="input-glass" style="flex: 1;" placeholder="العمر" value="21">
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <input id="factory-bot-dialect" class="input-glass" list="dialects-datalist" placeholder="اللهجة وأسلوب الكلام بحرية تامة (مثال: لهجة عراقية بغدادية، لهجة فضائية كونية، خليط مصري على فصحى)">
+                        <datalist id="dialects-datalist">
+                            <option value="لهجة عراقية بغدادية"></option>
+                            <option value="لهجة مصرية قاهرية"></option>
+                            <option value="لهجة سورية شامية"></option>
+                            <option value="لهجة سعودية خليجية"></option>
+                            <option value="لغة عربية فصحى معاصرة"></option>
+                            <option value="لهجة فضائية كونية غامضة"></option>
+                            <option value="خليط مصري على فصحى ساخرة"></option>
+                        </datalist>
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <input id="factory-bot-origin" class="input-glass" placeholder="البلد / المدينة / الموطن (مثال: بغداد، كوكب زحل، المنصورة، أو اتركه فارغاً) - لا يفترض القاهرة أبداً">
+                    </div>
+                    <div style="margin-bottom: 8px;">
+                        <input id="factory-bot-token" class="input-glass" placeholder="توكن BotFather (مثال: 123456789:AAHcv7-6_VanLlETJKftDHWgHQXfz_bu-n8)">
+                    </div>
+
+                    <!-- Chattiness in Groups (Slider 0.0 to 1.0) -->
+                    <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px;">
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); margin-bottom: 4px;">
+                            <span>💬 مستوى التفاعل في المجموعات (Group Chattiness):</span>
+                            <span id="chattiness-val" style="color: var(--neon-blue); font-weight: bold;">0.50</span>
+                        </div>
+                        <input id="factory-bot-chattiness" type="range" min="0.0" max="1.0" step="0.05" value="0.5" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('chattiness-val').innerText = parseFloat(this.value).toFixed(2)">
+                    </div>
+
+                    <!-- Voice Profile & Acoustic Prosody Tuning -->
+                    <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px 12px; margin-bottom: 8px;">
+                        <div style="font-size: 11px; font-weight: 700; color: var(--neon-purple); margin-bottom: 6px;">🎙️ إعدادات الصوت الواقعي (Dynamic Realistic Voice):</div>
+                        <input id="factory-bot-voice-profile" class="input-glass" style="margin-bottom: 6px; font-size: 11px;" placeholder="معرف الصوت الصوتي TTS Override (اختياري - اتركه فارغاً للصوت التلقائي)">
+                        <div style="display: flex; gap: 10px;">
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">
+                                    <span>درجة النبرة (Pitch):</span>
+                                    <span id="pitch-val" style="color: var(--neon-green); font-weight: bold;">0Hz</span>
+                                </div>
+                                <input id="factory-bot-pitch" type="range" min="-20" max="20" step="1" value="0" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('pitch-val').innerText = (this.value > 0 ? '+' : '') + this.value + 'Hz'">
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">
+                                    <span>سرعة الكلام (Rate):</span>
+                                    <span id="rate-val" style="color: var(--neon-purple); font-weight: bold;">0%</span>
+                                </div>
+                                <input id="factory-bot-rate" type="range" min="-30" max="30" step="1" value="0" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('rate-val').innerText = (this.value > 0 ? '+' : '') + this.value + '%'">
+                            </div>
+                        </div>
+                    </div>
+
+                    <textarea id="factory-bot-prompt" class="input-glass" style="min-height: 80px;" placeholder="اكتب قصة وشخصية وهوية وقواعد البوت بحرية تامة (الأصل، الصفات، اللزمات، والقواعد السلوكية)..."></textarea>
+                    <button class="btn-action" style="width: 100%;" onclick="createOfficialBot()">🚀 إنشاء وتفعيل البوت فورياً في المصنع</button>
+                    <div id="factory-bot-feedback" style="margin-top: 8px; font-size: 12px;"></div>
+                </div>
+
+                <!-- Mode 2: Activate Userbot (Phone OTP / Session) -->
+                <div id="f-mode-userbot" style="display: none; background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 12px; padding: 14px; margin-bottom: 14px;">
+                    <div style="font-size: 13px; font-weight: 700; color: var(--neon-green); margin-bottom: 8px;">👤 تفعيل يوزربوت برقم هاتف أو كود جلسة</div>
+                    <div style="display: flex; gap: 8px;">
+                        <input id="factory-ub-name" class="input-glass" style="flex: 2;" placeholder="اسم الحساب (مثال: عمر البشري)" value="عمر البشري">
+                        <select id="factory-ub-gender" class="input-glass" style="flex: 1;">
+                            <option value="MALE">👦 ولد (ذكر)</option>
+                            <option value="FEMALE">👧 بنت (أنثى)</option>
+                        </select>
+                    </div>
+
+                    <!-- Phone OTP Box -->
+                    <div id="ub-phone-box">
+                        <label style="font-size: 11px; color: var(--text-muted);">رقم الهاتف مع رمز الدولة الدولي:</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                            <input id="factory-ub-phone" class="input-glass" style="margin-bottom: 0;" placeholder="+22602269964" value="+22602269964">
+                            <button class="btn-action" onclick="requestUserbotOTP()">📨 طلب الكود</button>
+                        </div>
+                    </div>
+
+                    <!-- OTP Keypad Box -->
+                    <div id="ub-otp-box" style="display: none;">
+                        <div style="font-size: 12px; text-align: center; color: var(--neon-green); margin-bottom: 4px;">📩 تم إرسال كود التفعيل لتطبيق تليجرام!</div>
+                        <div class="otp-display" id="f-otp-view">_ _ _ _ _</div>
+                        <div class="keypad-grid">
+                            <button class="key-btn" onclick="pressFKey('1')">1</button>
+                            <button class="key-btn" onclick="pressFKey('2')">2</button>
+                            <button class="key-btn" onclick="pressFKey('3')">3</button>
+                            <button class="key-btn" onclick="pressFKey('4')">4</button>
+                            <button class="key-btn" onclick="pressFKey('5')">5</button>
+                            <button class="key-btn" onclick="pressFKey('6')">6</button>
+                            <button class="key-btn" onclick="pressFKey('7')">7</button>
+                            <button class="key-btn" onclick="pressFKey('8')">8</button>
+                            <button class="key-btn" onclick="pressFKey('9')">9</button>
+                            <button class="key-btn" onclick="clearFOTP()">🔄</button>
+                            <button class="key-btn" onclick="pressFKey('0')">0</button>
+                            <button class="key-btn" onclick="backspaceFOTP()">⌫</button>
+                        </div>
+                        <button class="btn-action" style="width: 100%;" onclick="submitUserbotOTP()">🔑 تأكيد الكود وتفعيل الحساب</button>
+                    </div>
+
+                    <!-- 2FA Password Box -->
+                    <div id="ub-2fa-box" style="display: none; margin-top: 10px;">
+                        <label style="font-size: 11px; color: var(--neon-yellow);">كلمة المرور بخطوتين (2FA):</label>
+                        <input type="password" id="factory-ub-2fa" class="input-glass" placeholder="اكتب كلمة سر التحقق بخطوتين">
+                        <button class="btn-action" style="width: 100%;" onclick="submitUserbot2FA()">🛡️ تأكيد وفك الحساب</button>
+                    </div>
+
+                    <div id="factory-ub-feedback" style="margin-top: 8px; font-size: 12px;"></div>
+                </div>
+
+                <!-- Registered Fleet Cards -->
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <span style="font-size: 13px; font-weight: 700; color: #fff;">⚡ أسطول البوتات واليوزربوتات المسجلة:</span>
+                    <button class="pill-btn" style="padding: 3px 8px;" onclick="loadFactoryBots()">تحديث 🔄</button>
+                </div>
+                <div id="factory-bots-list"></div>
+            </div>
+        </section>
+
+                <!-- 8. AetherGram Mod Telegram Client (King Only) - Standalone Telegram Web Plus Client -->
+        <section id="view-aethergram" class="view-section">
+            <div style="display: flex; flex-direction: column; height: 100%; background: #0e1621; position: relative;">
+                
+                <!-- Native Telegram Plus AppBar -->
+                <div class="telegram-appbar">
+                    <div style="display: flex; align-items: center; gap: 10px; cursor: pointer;" onclick="toggleAccountMenu()">
+                        <div class="tg-avatar" style="width: 36px; height: 36px; font-size: 14px;" id="appbar-avatar">👤</div>
+                        <div>
+                            <div style="display: flex; align-items: center; gap: 4px;">
+                                <span id="appbar-account-name" style="font-size: 13.5px; font-weight: 700; color: #fff;">اليوزربوت (Gg)</span>
+                                <span style="font-size: 10px; color: var(--text-muted);">▼</span>
+                            </div>
+                            <div style="font-size: 10px; color: var(--neon-green); display: flex; align-items: center; gap: 4px;">
+                                <span style="display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--neon-green); box-shadow: 0 0 6px var(--neon-green);"></span>
+                                <span>👻 وضع الشبح نشط</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <button class="power-pill" id="theme-toggle-btn" onclick="cycleAetherTheme()" style="margin-left:6px;">💎 Cyber Cyan</button>
+                        <button class="power-pill" onclick="openProfileManagerModal()" style="margin-left:6px;">⚙️ الحساب</button>
+                        <button class="pill-btn" style="padding: 4px 8px; border: none; background: transparent; font-size: 16px; color: #fff;" onclick="toggleSearchBar()" title="بحث">🔍</button>
+                        <button class="pill-btn" style="padding: 4px 8px; border: none; background: transparent; font-size: 16px; color: #fff;" onclick="loadModAccountsAndChats()" title="تحديث">🔄</button>
+                        <button class="pill-btn" style="padding: 4px 10px; font-size: 11px; background: rgba(255,255,255,0.08);" onclick="switchTab('view-telemetry', document.querySelector('.tab-bar .tab-btn:first-child'))">✕ خروج</button>
+                    </div>
+                </div>
+
+                <!-- Account Switcher Dropdown (Modal / Popover) -->
+                <div id="mod-acc-dropdown" style="display: none; position: absolute; top: 54px; right: 12px; z-index: 105; background: #17212b; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); width: 250px; padding: 6px 0;">
+                    <div style="padding: 6px 12px; font-size: 11px; color: var(--text-muted); font-weight: 700; border-bottom: 1px solid rgba(255,255,255,0.06);">تبديل الحساب النشط</div>
+                    <div id="acc-dropdown-list"></div>
+                </div>
+
+                <!-- Instant Search Bar (Collapsible) -->
+                <div id="mod-search-bar" style="display: none; background: #17212b; padding: 8px 12px; border-bottom: 1px solid rgba(255,255,255,0.06);">
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="mod-search-input" class="input-glass" style="margin-bottom: 0; padding: 6px 10px; font-size: 12px;" placeholder="بحث عن محادثة أو اسم أو ID..." oninput="filterChatList(this.value)">
+                        <button class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="openManualChat()">فتح ⚡</button>
+                    </div>
+                </div>
+
+                <!-- Telegram Folders Bar -->
+                <div class="telegram-folders">
+                    <button class="folder-pill active" onclick="filterModFolder('all', this)">الكل <span class="badge-counter" id="badge-all">0</span></button>
+                    <button class="folder-pill" onclick="filterModFolder('dm', this)">الخاص 👤 <span class="badge-counter" id="badge-dm">0</span></button>
+                    <button class="folder-pill" onclick="filterModFolder('group', this)">الجروبات 👥 <span class="badge-counter" id="badge-group">0</span></button>
+                    <button class="folder-pill" onclick="filterModFolder('channel', this)">القنوات 📢 <span class="badge-counter" id="badge-channel">0</span></button>
+                    <button class="folder-pill" style="color: var(--neon-red);" onclick="filterModFolder('deleted', this)">المحذوفات 🗑️</button>
+                </div>
+
+                <!-- Chat List View -->
+                <div id="mod-chat-list-view" style="flex: 1; overflow-y: auto;">
+                    <div id="mod-chats-container"></div>
+                </div>
+
+                <!-- Full-Screen Slide-Over Chat Window -->
+                <div id="mod-active-chat-view" class="chat-slideover" style="display: none;">
+                    
+                    <!-- Slim Chat Header -->
+                    <div class="chat-slideover-header">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <button class="pill-btn" style="padding: 6px 10px; font-size: 14px; background: transparent; border: none; color: #fff;" onclick="closeModActiveChat()">←</button>
+                            <div class="tg-avatar" style="width: 38px; height: 38px; font-size: 15px;" id="chat-header-avatar">💬</div>
+                            <div>
+                                <div id="mod-chat-title" style="font-size: 13.5px; font-weight: 700; color: #fff; max-width: 170px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">محادثة</div>
+                                <div id="chat-live-sub" style="font-size: 10px; color: var(--neon-green);">💚 المعزة: 85% | 😊 المزاج: رايق</div>
+                            </div>
+                        </div>
+
+                        <!-- 3-Dots Menu -->
+                        <div style="position: relative;">
+                            <button class="pill-btn" style="padding: 4px 8px; border: none; background: transparent; font-size: 18px; color: #fff;" onclick="toggleChatOptionsMenu()">⋮</button>
+                            <div id="chat-options-menu" style="display: none; position: absolute; left: 0; top: 40px; background: #17212b; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.6); width: 190px; padding: 6px 0; z-index: 110;">
+                                <div style="padding: 8px 12px; font-size: 12px; color: var(--neon-yellow); cursor: pointer;" onclick="promoteKingInGroup()">👑 ترقية الملك مشرف</div>
+                                <div style="padding: 8px 12px; font-size: 12px; color: var(--neon-green); cursor: pointer;" onclick="joinKingToGroup()">➕ ضم للجروب / دعوة</div>
+                                <div style="padding: 8px 12px; font-size: 12px; color: var(--neon-blue); cursor: pointer;" onclick="toggleModChatAI()" id="mod-ai-toggle-btn">🤖 رد تلقائي: نعم</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Messages Feed -->
+                    <div id="mod-messages-feed" class="chat-slideover-body"></div>
+
+                    <!-- Bottom Composer Bar -->
+                    <div class="chat-slideover-footer">
+                        <button class="pill-btn" style="padding: 8px; border: none; background: transparent; font-size: 16px; color: var(--text-muted);" title="اقتراح رد ذكي" onclick="suggestAIReply()">💡</button>
+                        <input type="text" id="mod-reply-input" class="input-glass" placeholder="اكتب رسالة..." style="margin-bottom: 0; border-radius: 20px; padding: 8px 14px; background: #0e1621;" onkeydown="if(event.key==='Enter') sendModMessage()">
+                        <button class="btn-action" style="padding: 8px 14px; border-radius: 20px; background: linear-gradient(135deg, #00d2ff, #0077ff);" onclick="sendModMessage()">🚀</button>
+                    </div>
+
+                </div>
+
+            </div>
+        </section>
+    </div>
+
+    <!-- Full-Screen Avatar Viewer Modal -->
+    <div id="modal-avatar-viewer" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.88); z-index: 250; align-items: center; justify-content: center; flex-direction: column; padding: 20px;" onclick="closeAvatarViewer()">
+        <div style="display: flex; justify-content: space-between; width: 100%; max-width: 340px; margin-bottom: 12px; color: #fff;">
+            <span id="viewer-avatar-title" style="font-weight: 700; font-size: 14px;">صورة البروفايل</span>
+            <span style="font-size: 18px; cursor: pointer;">✕</span>
+        </div>
+        <img id="viewer-avatar-img" src="" style="width: 280px; height: 280px; border-radius: 20px; object-fit: cover; box-shadow: 0 10px 40px rgba(0,245,212,0.3); border: 2px solid #00F5D4;" onclick="event.stopPropagation()">
+    </div>
+
+    <!-- Live Account Profile Manager Modal -->
+    <div id="modal-account-profile" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 210; align-items: center; justify-content: center; padding: 16px;">
+        <div class="glass card" style="width: 100%; max-width: 440px; max-height: 90vh; overflow-y: auto;">
+            <div class="card-title">
+                <span>⚙️ استوديو إدارة بروفايل الحساب النشط</span>
+                <span onclick="closeProfileManagerModal()" style="cursor: pointer; font-size: 16px;">✕</span>
+            </div>
+            <div style="text-align: center; margin-bottom: 14px;">
+                <input type="file" id="prof-photo-file" accept="image/*" style="display: none;" onchange="uploadProfilePhoto()">
+                <button class="power-pill" style="padding: 6px 14px;" onclick="document.getElementById('prof-photo-file').click()">📷 تغيير / رفع صورة الحساب الشخصية</button>
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="font-size: 11px; color: var(--text-muted);">الاسم الأول (First Name):</label>
+                <input id="prof-first-name" class="input-glass" placeholder="مثلاً: Gg أو عمر">
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="font-size: 11px; color: var(--text-muted);">الاسم الأخير (Last Name):</label>
+                <input id="prof-last-name" class="input-glass" placeholder="مثلاً: Aether">
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="font-size: 11px; color: var(--text-muted);">المعرف (Username):</label>
+                <input id="prof-username" class="input-glass" placeholder="@username">
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 11px; color: var(--text-muted);">النبذة التعريفية (Bio / About):</label>
+                <input id="prof-bio" class="input-glass" placeholder="اكتب النبذة...">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                <button class="btn-action" style="flex: 1;" onclick="saveAccountProfile()">💾 حفظ وتطبيق في تليجرام</button>
+            </div>
+            <div style="border-top: 1px solid rgba(255,255,255,0.08); padding-top: 10px;">
+                <label style="font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 6px;">📱 نشر Story جديدة من هذا الحساب:</label>
+                <div style="display: flex; gap: 6px;">
+                    <input id="story-caption" class="input-glass" style="margin-bottom: 0;" placeholder="اكتب الستوري...">
+                    <button class="power-pill" style="background: #00F5D4; color: #000;" onclick="postAccountStory()">نشر 🚀</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modify User Affinity Modal -->
+    <div id="modal-modify-affinity" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.85); z-index: 220; align-items: center; justify-content: center; padding: 16px;">
+        <div class="glass card" style="width: 100%; max-width: 380px;">
+            <div class="card-title">
+                <span>🎭 تعديل رصيد المعزة والمكانة</span>
+                <span onclick="closeModifyAffinityModal()" style="cursor: pointer; font-size: 16px;">✕</span>
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="font-size: 11px; color: var(--text-muted);">رصيد المعزة (-100 إلى +100):</label>
+                <input id="mod-affinity-val" type="number" class="input-glass" min="-100" max="100" value="85">
+            </div>
+            <div style="margin-bottom: 14px;">
+                <label style="font-size: 11px; color: var(--text-muted);">الرتبة الاجتماعية:</label>
+                <select id="mod-affinity-role" class="input-glass">
+                    <option value="MEMBER">عضو عادي (MEMBER)</option>
+                    <option value="FAVORITE">مفضل / مقرب (FAVORITE)</option>
+                    <option value="EXCLUSIVE_PARTNER">شريك استثنائي (EXCLUSIVE_PARTNER)</option>
+                    <option value="ADMIN">مسؤول (ADMIN)</option>
+                    <option value="VILLAIN">شرير ومحظور (VILLAIN)</option>
+                </select>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button class="btn-action" style="flex: 1;" onclick="saveAffinityModification()">💾 حفظ التعديل</button>
+                <button class="btn-action" style="background: rgba(255,255,255,0.1);" onclick="closeModifyAffinityModal()">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Edit Persona Modal (Used in Factory) -->
+    <div id="modal-edit-bot" style="display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 200; align-items: center; justify-content: center; padding: 16px;">
+        <div class="glass card" style="width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto;">
+            <div class="card-title">
+                <span>✏️ تعديل كينونة وشخصية البوت</span>
+                <span onclick="closeEditModal()" style="cursor: pointer; font-size: 16px;">✕</span>
+            </div>
+            <input type="hidden" id="edit-bot-id">
+            <div style="margin-bottom: 8px;">
+                <label style="font-size: 11px; color: var(--text-muted);">اسم البوت (حر 100%):</label>
+                <input id="edit-bot-name" class="input-glass">
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <div style="flex: 1;">
+                    <label style="font-size: 11px; color: var(--text-muted);">الجنس:</label>
+                    <select id="edit-bot-gender" class="input-glass">
+                        <option value="FEMALE">👧 بنت (أنثى)</option>
+                        <option value="MALE">👦 ولد (ذكر)</option>
+                    </select>
+                </div>
+                <div style="flex: 1;">
+                    <label style="font-size: 11px; color: var(--text-muted);">العمر:</label>
+                    <input id="edit-bot-age" type="number" class="input-glass">
+                </div>
+            </div>
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                <div style="flex: 1;">
+                    <label style="font-size: 11px; color: var(--text-muted);">اللهجة وأسلوب التحدث:</label>
+                    <input id="edit-bot-dialect" class="input-glass" placeholder="مثال: لهجة عراقية بغدادية، لهجة فضائية">
+                </div>
+                <div style="flex: 1;">
+                    <label style="font-size: 11px; color: var(--text-muted);">الموطن / الأصل:</label>
+                    <input id="edit-bot-origin" class="input-glass" placeholder="مثال: بغداد، زحل (لا يفترض القاهرة)">
+                </div>
+            </div>
+            <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px; margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-bottom: 2px;">
+                    <span>تفاعل المجموعات (Chattiness):</span>
+                    <span id="edit-chattiness-val" style="color: var(--neon-blue); font-weight: bold;">0.50</span>
+                </div>
+                <input id="edit-bot-chattiness" type="range" min="0.0" max="1.0" step="0.05" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('edit-chattiness-val').innerText = parseFloat(this.value).toFixed(2)">
+            </div>
+            <div style="background: rgba(255,255,255,0.02); border: 1px solid var(--border-card); border-radius: 8px; padding: 8px; margin-bottom: 8px;">
+                <div style="font-size: 10px; font-weight: bold; color: var(--neon-purple); margin-bottom: 4px;">🎙️ الصوت الواقعي (Pitch & Rate):</div>
+                <input id="edit-bot-voice-profile" class="input-glass" style="margin-bottom: 6px; font-size: 10px;" placeholder="معرف الصوت TTS Override (اختياري)">
+                <div style="display: flex; gap: 8px;">
+                    <div style="flex: 1;">
+                        <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted);">
+                            <span>Pitch:</span>
+                            <span id="edit-pitch-val" style="color: var(--neon-green);">0Hz</span>
+                        </div>
+                        <input id="edit-bot-pitch" type="range" min="-20" max="20" step="1" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('edit-pitch-val').innerText = (this.value > 0 ? '+' : '') + this.value + 'Hz'">
+                    </div>
+                    <div style="flex: 1;">
+                        <div style="display: flex; justify-content: space-between; font-size: 9px; color: var(--text-muted);">
+                            <span>Rate:</span>
+                            <span id="edit-rate-val" style="color: var(--neon-purple);">0%</span>
+                        </div>
+                        <input id="edit-bot-rate" type="range" min="-30" max="30" step="1" class="input-glass" style="width: 100%; margin-bottom: 0;" oninput="document.getElementById('edit-rate-val').innerText = (this.value > 0 ? '+' : '') + this.value + '%'">
+                    </div>
+                </div>
+            </div>
+            <div style="margin-bottom: 8px; background: rgba(0, 210, 255, 0.05); border: 1px dashed rgba(0, 210, 255, 0.35); border-radius: 10px; padding: 8px;">
+                <label style="font-size: 11px; color: var(--neon-blue); font-weight: 700; display: block; margin-bottom: 4px;">🖼️ صورة البوت في تليجرام (BotFather Profile Photo):</label>
+                <input id="edit-bot-photo-file" type="file" accept="image/*" class="input-glass" style="padding: 6px; font-size: 11px; margin-bottom: 4px;">
+                <div id="edit-bot-photo-status" style="font-size: 10.5px; color: var(--text-muted);">اختر صورة لتحديث صورة بروفايل البوت مباشرة في تليجرام عند الحفظ</div>
+            </div>
+            <div style="margin-bottom: 8px;">
+                <label style="font-size: 11px; color: var(--text-muted);">النبذة التعريفية والبايو في تليجرام (BotFather Bio):</label>
+                <input id="edit-bot-bio" class="input-glass">
+            </div>
+            <div style="margin-bottom: 10px;">
+                <label style="font-size: 11px; color: var(--text-muted);">البرومبت والتوجيهات الذهنية والقواعد:</label>
+                <textarea id="edit-bot-prompt" class="input-glass" style="min-height: 80px;"></textarea>
+            </div>
+            <div style="display: flex; gap: 8px;">
+                <button class="btn-action" style="flex: 1;" onclick="saveEditedBot()">💾 حفظ التعديلات</button>
+                <button class="btn-action" style="background: rgba(255,255,255,0.1); border: 1px solid var(--border-card);" onclick="closeEditModal()">إلغاء</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Navigation Tab Bar -->
+    <nav class="tab-bar">
+        <button class="tab-btn active" onclick="switchTab('view-telemetry', this)">
+            <span class="icon">⚡</span>
+            <span>الرادار</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('view-games', this)">
+            <span class="icon">🎮</span>
+            <span>الألعاب</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('view-persona-studio', this)">
+            <span class="icon">🎭</span>
+            <span>شخصيتي</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('view-vault-and-calls', this)">
+            <span class="icon">🧠</span>
+            <span>الخزنة</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('view-leaderboard', this)">
+            <span class="icon">🏆</span>
+            <span>المعزة</span>
+        </button>
+        <button id="tab-btn-factory" class="tab-btn king-only" onclick="switchTab('view-factory', this)">
+            <span class="icon">🏭</span>
+            <span>المصنع</span>
+        </button>
+        <button id="tab-btn-aethergram" class="tab-btn king-only supreme-only" onclick="switchTab('view-aethergram', this)">
+            <span class="icon">📱</span>
+            <span>تليجرام بلس</span>
+        </button>
+    </nav>
+
+    <script>
+        let tgUser = { id: 0, first_name: "Administrator", username: "admin" };
+        let isKingUser = false;
+        let isSupremeKing = false;
+        let currentFOTP = "";
+        let activeModAccountId = "userbot";
+        let activeModChatId = null;
+        let activeModAutoAI = true;
+
+        if (window.Telegram && window.Telegram.WebApp) {
+            window.Telegram.WebApp.expand();
+            if (window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.user) {
+                tgUser = window.Telegram.WebApp.initDataUnsafe.user;
+            }
+        }
+
+        // Helper to format error safely and avoid [object Object]
+        function formatError(d, fallback = 'حدث خطأ') {
+            if (!d) return fallback;
+            if (d.message) return d.message;
+            if (typeof d.detail === 'string') return d.detail;
+            if (Array.isArray(d.detail)) {
+                return d.detail.map(item => item.msg || JSON.stringify(item)).join(' | ');
+            }
+            if (typeof d.detail === 'object') return JSON.stringify(d.detail);
+            return fallback;
+        }
+
+        // Tab Switching
+        function switchTab(viewId, btn) {
+            if ((viewId === 'view-factory' || viewId === 'view-aethergram') && !isKingUser) {
+                return;
+            }
+            document.querySelectorAll('.view-section').forEach(el => {
+                el.classList.remove('active');
+            });
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+
+            const target = document.getElementById(viewId);
+            if (target) {
+                target.classList.add('active');
+            }
+            if (btn) btn.classList.add('active');
+
+            // Hide main header on full-screen Telegram Plus view
+            const mainHeader = document.querySelector('header');
+            if (viewId === 'view-aethergram') {
+                if (mainHeader) mainHeader.style.display = 'none';
+                loadModAccountsAndChats();
+            } else {
+                if (mainHeader) mainHeader.style.display = 'flex';
+            }
+
+            window.scrollTo({ top: 0, behavior: 'instant' });
+
+            if (viewId === 'view-persona-studio') loadPersonaConfig();
+            if (viewId === 'view-vault-and-calls') loadTimeCapsules();
+            if (viewId === 'view-factory') { loadFactoryBots(); loadBotArenaStatus(); }
+        }
+
+        function switchGameSubtab(subId, btn) {
+            document.querySelectorAll('#view-games .card').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('#view-games .pill-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(subId).style.display = 'block';
+            btn.classList.add('active');
+        }
+
+        function switchPersonaSubtab(subId, btn) {
+            document.querySelectorAll('#view-persona-studio .card').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('#view-persona-studio .pill-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(subId).style.display = 'block';
+            btn.classList.add('active');
+            if (subId === 'sub-p-cmds') loadCustomCommands();
+        }
+
+        function switchVaultSubtab(subId, btn) {
+            document.querySelectorAll('#view-vault-and-calls .card').forEach(el => el.style.display = 'none');
+            document.querySelectorAll('#view-vault-and-calls .pill-btn').forEach(el => el.classList.remove('active'));
+            document.getElementById(subId).style.display = 'block';
+            btn.classList.add('active');
+        }
+
+// URL Search Params & Multi-Bot Scope (100% Decoupled from Phone Local Timezone)
+        const urlParams = new URLSearchParams(window.location.search);
+        const tgInitData = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData)
+            ? window.Telegram.WebApp.initData : '';
+        const tgStartParam = (window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initDataUnsafe && window.Telegram.WebApp.initDataUnsafe.start_param)
+            ? window.Telegram.WebApp.initDataUnsafe.start_param : '';
+        let savedLastBotId = '';
+        try { savedLastBotId = localStorage.getItem('aether_selected_bot_id') || ''; } catch (e) {}
+        const explicitUrlBotId = urlParams.get('bot_id') || tgStartParam || '';
+        let activeBotId = explicitUrlBotId || (!tgInitData ? savedLastBotId : '');
+        let activeBotIdentity = null;
+
+        /**
+         * Pure UTC -> Bot IANA Timezone converter.
+         * Never uses phone local getHours() (e.g. Algeria UTC+1); strictly converts UTC epoch
+         * to the bot's target timezone (e.g. Asia/Damascus for Syria, Asia/Baghdad for Iraq, Africa/Cairo for Egypt).
+         */
+        function computeBotTimeFromUTC(ianaTimezone, utcOffsetHours) {
+            const nowUtc = new Date();
+            if (ianaTimezone) {
+                try {
+                    const fmt = new Intl.DateTimeFormat('en-US', {
+                        timeZone: ianaTimezone,
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        hour12: true
+                    });
+                    const parts = fmt.formatToParts(nowUtc);
+                    let hourStr = '12';
+                    let minStr = '00';
+                    let dayPeriod = 'AM';
+                    for (const p of parts) {
+                        if (p.type === 'hour') hourStr = p.value.padStart(2, '0');
+                        if (p.type === 'minute') minStr = p.value.padStart(2, '0');
+                        if (p.type === 'dayPeriod') dayPeriod = p.value.toUpperCase();
+                    }
+                    const suffixAr = dayPeriod.includes('P') ? 'م' : 'ص';
+                    return `${hourStr}:${minStr} ${suffixAr}`;
+                } catch (err) {
+                    console.warn("IANA timezone fallback to pure UTC offset math:", ianaTimezone, err);
+                }
+            }
+            // Fallback: Pure UTC timestamp shift using getUTCHours() & getUTCMinutes() (zero local phone timezone dependency)
+            const offsetHrs = (typeof utcOffsetHours === 'number' && !isNaN(utcOffsetHours)) ? utcOffsetHours : 2.0;
+            const shiftedUtc = new Date(nowUtc.getTime() + (offsetHrs * 3600 * 1000));
+            const h24 = shiftedUtc.getUTCHours();
+            const mins = String(shiftedUtc.getUTCMinutes()).padStart(2, '0');
+            const suffixAr = h24 >= 12 ? 'م' : 'ص';
+            let h12 = h24 % 12;
+            if (h12 === 0) h12 = 12;
+            return `${String(h12).padStart(2, '0')}:${mins} ${suffixAr}`;
+        }
+
+        function resolveCapsuleLocationText(ident) {
+            if (!ident) return '';
+            if (ident.capsule_location && ident.capsule_location.trim()) {
+                return ident.capsule_location.trim();
+            }
+            if (ident.origin_location && ident.origin_location.trim()) {
+                return ident.origin_location.split('،')[0].split(',')[0].trim();
+            }
+            if (ident.country_ar && ident.country_ar.trim()) {
+                return ident.country_ar.trim();
+            }
+            if (ident.city && ident.city.trim()) {
+                return ident.city.split('،')[0].split(',')[0].trim();
+            }
+            return 'القاهرة';
+        }
+
+        function updateLiveHeaderClock() {
+            if (!activeBotIdentity) return;
+            const clockEl = document.getElementById('circadian-clock');
+            const flagEl = document.getElementById('header-country-flag');
+            if (flagEl) {
+                flagEl.innerText = activeBotIdentity.flag || '🌐';
+            }
+            if (clockEl) {
+                const liveTimeStr = computeBotTimeFromUTC(
+                    activeBotIdentity.iana_timezone,
+                    activeBotIdentity.utc_offset_hours
+                );
+                const locLabel = resolveCapsuleLocationText(activeBotIdentity);
+                clockEl.innerText = `${liveTimeStr} (${locLabel})`;
+            }
+        }
+
+        function applyHeaderIdentity(ident) {
+            if (!ident) return;
+            activeBotIdentity = ident;
+            if (ident.bot_id && !activeBotId) {
+                activeBotId = ident.bot_id;
+            }
+            const titleEl = document.getElementById('header-brand-title');
+            if (titleEl) titleEl.innerText = ident.display_title || ident.name || 'Aether Core 3.0';
+            
+            const badgeEl = document.getElementById('persona-badge');
+            if (badgeEl) badgeEl.innerText = ident.badge || '';
+            
+            const flagEl = document.getElementById('header-country-flag');
+            if (flagEl) flagEl.innerText = ident.flag || '🌐';
+            
+            const avatarEl = document.getElementById('header-avatar-img');
+            if (avatarEl && ident.avatar_url) avatarEl.src = ident.avatar_url;
+            
+            updateLiveHeaderClock();
+
+            const switcherEl = document.getElementById('header-bot-switcher');
+            if (switcherEl && ident.bot_id) {
+                switcherEl.value = ident.bot_id;
+            }
+        }
+
+        function renderHeaderBotSwitcher(botsList) {
+            const switcherEl = document.getElementById('header-bot-switcher');
+            if (!switcherEl) return;
+            if (!isKingUser || !Array.isArray(botsList) || botsList.length === 0) {
+                switcherEl.style.display = 'none';
+                return;
+            }
+            switcherEl.style.display = 'inline-block';
+            const currentSelection = activeBotId || (activeBotIdentity && activeBotIdentity.bot_id) || 'master_omar_official';
+            switcherEl.innerHTML = '';
+            botsList.forEach(b => {
+                _fleetBotsCache[b.instance_id] = b;
+                const opt = document.createElement('option');
+                opt.value = b.instance_id;
+                const bFlag = b.flag || '🌐';
+                const bLoc = b.capsule_location || b.country_ar || (b.city ? b.city.split('،')[0] : '');
+                opt.innerText = `${bFlag} ${b.name} (${bLoc})`;
+                opt.style.background = '#121826';
+                opt.style.color = '#fff';
+                switcherEl.appendChild(opt);
+            });
+            if ( Array.from(switcherEl.options).some(o => o.value === currentSelection) ) {
+                switcherEl.value = currentSelection;
+            }
+        }
+
+        async function switchActiveBot(newBotId) {
+            if (!newBotId) return;
+            activeBotId = newBotId;
+            try { localStorage.setItem('aether_selected_bot_id', newBotId); } catch (e) {}
+            try {
+                const newUrl = new URL(window.location.href);
+                newUrl.searchParams.set('bot_id', newBotId);
+                window.history.replaceState({}, '', newUrl.toString());
+            } catch (err) {}
+
+            // Instant optimistic update from cache before network round-trip completes
+            const cached = _fleetBotsCache[newBotId];
+            if (cached) {
+                const isFemale = (cached.gender || '').toUpperCase() === 'FEMALE';
+                applyHeaderIdentity({
+                    bot_id: cached.instance_id,
+                    name: cached.name,
+                    display_title: `${cached.name} ${isFemale ? '✨' : '⚡'}`,
+                    gender: isFemale ? 'female' : 'male',
+                    flag: cached.flag || '🌐',
+                    city: cached.city || '',
+                    country_ar: cached.country_ar || '',
+                    capsule_location: cached.capsule_location || cached.origin_location || cached.country_ar || '',
+                    iana_timezone: cached.iana_timezone || 'Africa/Cairo',
+                    utc_offset_hours: cached.utc_offset_hours,
+                    time_str: cached.time_str,
+                    badge: cached.bio || `${cached.name} • شخصية مستقلة`,
+                });
+            }
+            await fetchState();
+            if (document.getElementById('view-factory')?.classList.contains('active')) {
+                loadFactoryBots();
+            }
+        }
+
+        // Telemetry & RBAC Fetch
+        async function fetchState() {
+            try {
+                const queryUrl = `/api/webapp/state?user_id=${tgUser.id}&bot_id=${encodeURIComponent(activeBotId)}&init_data=${encodeURIComponent(tgInitData)}`;
+                const res = await fetch(queryUrl);
+                const data = await res.json();
+
+                isKingUser = !!(data.user && data.user.is_king);
+                isSupremeKing = !!(data.user && (data.user.is_supreme_king !== undefined ? data.user.is_supreme_king : (tgUser.id > 0)));
+                
+                // Enforce RBAC UI Cloaking: Factory Admins see Factory; only Supreme King sees Telegram Plus
+                const factoryTab = document.getElementById('tab-btn-factory');
+                if (factoryTab) factoryTab.style.display = isKingUser ? 'flex' : 'none';
+                const aethergramTab = document.getElementById('tab-btn-aethergram');
+                if (aethergramTab) aethergramTab.style.display = isSupremeKing ? 'flex' : 'none';
+
+                if (Array.isArray(data.available_bots)) {
+                    renderHeaderBotSwitcher(data.available_bots);
+                }
+
+                if (data.identity) {
+                    applyHeaderIdentity(data.identity);
+                } else if (data.persona && data.persona.name_ar) {
+                    document.getElementById('persona-badge').innerText = data.persona.name_ar;
+                }
+                document.getElementById('mood-label').innerText = data.hormones.mood_label;
+
+                const setBar = (id, val) => {
+                    const p = Math.round(val * 100);
+                    document.getElementById(`val-${id}`).innerText = `${p}%`;
+                    document.getElementById(`bar-${id}`).style.width = `${p}%`;
+                };
+                setBar('dopamine', data.hormones.dopamine);
+                setBar('oxytocin', data.hormones.oxytocin);
+                setBar('cortisol', data.hormones.cortisol);
+                setBar('serotonin', data.hormones.serotonin);
+
+                if (!data.identity && data.circadian) {
+                    const cLoc = data.circadian.capsule_location || 'القاهرة';
+                    const cTime = computeBotTimeFromUTC(data.circadian.iana_timezone || 'Africa/Cairo', data.circadian.utc_offset_hours || 2.0);
+                    document.getElementById('circadian-clock').innerText = `${cTime} (${cLoc})`;
+                }
+                document.getElementById('user-rank-title').innerText = data.user.rank_title;
+                document.getElementById('user-tier-label').innerText = data.user.tier;
+                document.getElementById('user-affinity-score').innerText = `${data.user.affinity}/100`;
+
+                const boardWrap = document.getElementById('leaderboard-list');
+                boardWrap.innerHTML = '';
+                data.leaderboard.forEach((u, idx) => {
+                    const item = document.createElement('div');
+                    item.className = 'glass';
+                    item.style.padding = '10px 14px';
+                    item.style.marginBottom = '8px';
+                    item.style.display = 'flex';
+                    item.style.justifyContent = 'space-between';
+                    item.style.alignItems = 'center';
+                    item.innerHTML = `
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <span style="font-size: 15px; font-weight: 800; color: var(--neon-yellow);">${idx === 0 ? '👑' : idx + 1}</span>
+                            <div>
+                                <div style="font-size: 13.5px; font-weight: 700;">${u.name}</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">${u.role || u.tier}</div>
+                            </div>
+                        </div>
+                        <div style="font-size: 14px; font-weight: 800; color: var(--neon-blue);">${u.affinity} نقطة</div>
+                    `;
+                    boardWrap.appendChild(item);
+                });
+            } catch (e) { console.error("Telemetry error:", e); }
+        }
+
+
+        // ==========================================
+        // Task 4.1 & 4.2: Bot Arena (حوار البوتات الحي في الجروبات) Mini-App Controller
+        // ==========================================
+        let _arenaSelectedRounds = "infinite";
+        let _arenaGroupsCache = [];
+
+        function selectArenaRounds(roundsVal, btnEl) {
+            _arenaSelectedRounds = roundsVal;
+            document.querySelectorAll('.arena-round-btn').forEach(b => b.classList.remove('active'));
+            if (btnEl) btnEl.classList.add('active');
+        }
+
+        function getTargetArenaChatId() {
+            const manual = (document.getElementById('arena-custom-chat-id')?.value || '').trim();
+            if (manual && !isNaN(parseInt(manual))) {
+                return parseInt(manual);
+            }
+            const sel = document.getElementById('arena-group-select')?.value || '';
+            if (sel && !isNaN(parseInt(sel))) {
+                return parseInt(sel);
+            }
+            return null;
+        }
+
+        function onArenaGroupChange() {
+            const selVal = document.getElementById('arena-group-select')?.value || '';
+            const customInput = document.getElementById('arena-custom-chat-id');
+            if (selVal && customInput) {
+                customInput.value = selVal;
+            }
+            updateArenaGroupDetailsUI();
+        }
+
+        function updateArenaGroupDetailsUI() {
+            const cid = getTargetArenaChatId();
+            const botsListEl = document.getElementById('arena-present-bots-list');
+            const badgeEl = document.getElementById('arena-live-badge');
+            const feedbackEl = document.getElementById('arena-status-feedback');
+            const topicInput = document.getElementById('arena-topic-input');
+
+            if (!cid) {
+                if (botsListEl) botsListEl.innerText = 'اختر جروباً أو اكتب Chat ID...';
+                return;
+            }
+
+            const g = _arenaGroupsCache.find(item => Number(item.chat_id) === Number(cid));
+            if (g) {
+                const bots = g.present_bots || [];
+                if (botsListEl) {
+                    botsListEl.innerHTML = bots.length
+                        ? bots.map(b => `<span style="display:inline-block; background:rgba(0,210,255,0.12); border:1px solid rgba(0,210,255,0.3); padding:2px 8px; border-radius:10px; margin:2px;">${b.name} ${b.gender === 'female' ? '👧' : '👦'}</span>`).join(' ')
+                        : 'كل بوتات الأسطول المتواجدة في الجروب';
+                }
+                if (topicInput && !topicInput.value && g.topic) {
+                    topicInput.value = g.topic;
+                }
+                if (g.is_active && g.session) {
+                    const maxR = g.session.max_rounds === 'infinite' ? '♾️' : g.session.max_rounds;
+                    if (badgeEl) {
+                        badgeEl.style.background = 'rgba(0, 245, 155, 0.2)';
+                        badgeEl.style.color = 'var(--neon-green)';
+                        badgeEl.innerText = `🟢 نشط (جولة ${g.session.current_round}/${maxR})`;
+                    }
+                    if (feedbackEl) {
+                        feedbackEl.innerHTML = `<span style="color:var(--neon-green);">🗣️ الحوار شغال الآن في <b>${g.title}</b> | آخر متحدث: <b>${g.session.last_speaker_name || 'يبدأ الآن...'}</b></span>`;
+                    }
+                } else {
+                    if (badgeEl) {
+                        badgeEl.style.background = 'rgba(255,255,255,0.08)';
+                        badgeEl.style.color = 'var(--text-muted)';
+                        badgeEl.innerText = '⚪ متوقف';
+                    }
+                }
+            }
+        }
+
+        async function loadBotArenaStatus() {
+            if (!isKingUser) return;
+            try {
+                const res = await fetch(`/api/webapp/arena/status?user_id=${tgUser.id}`);
+                const data = await res.json();
+                if (!data.success) return;
+
+                _arenaGroupsCache = data.groups || [];
+                const sel = document.getElementById('arena-group-select');
+                const currentVal = sel ? sel.value : '';
+                if (sel) {
+                    sel.innerHTML = '<option value="">-- اختر الجروب المستهدف --</option>';
+                    _arenaGroupsCache.forEach(g => {
+                        const opt = document.createElement('option');
+                        opt.value = g.chat_id;
+                        const statusIcon = g.is_active ? '🟢 ' : '👥 ';
+                        opt.innerText = `${statusIcon}${g.title} (${g.chat_id})`;
+                        sel.appendChild(opt);
+                    });
+                    if (currentVal && _arenaGroupsCache.some(g => String(g.chat_id) === String(currentVal))) {
+                        sel.value = currentVal;
+                    } else if (_arenaGroupsCache.length > 0) {
+                        const activeG = _arenaGroupsCache.find(g => g.is_active) || _arenaGroupsCache[0];
+                        sel.value = activeG.chat_id;
+                        const customInput = document.getElementById('arena-custom-chat-id');
+                        if (customInput && !customInput.value) customInput.value = activeG.chat_id;
+                    }
+                }
+                updateArenaGroupDetailsUI();
+            } catch (e) {
+                console.error("BotArena status error:", e);
+            }
+        }
+
+        async function pickRandomArenaTopic() {
+            const cid = getTargetArenaChatId();
+            const feedbackEl = document.getElementById('arena-status-feedback');
+            try {
+                const res = await fetch('/api/webapp/arena/topic', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, chat_id: cid })
+                });
+                const data = await res.json();
+                if (data.success && data.topic) {
+                    const topicInput = document.getElementById('arena-topic-input');
+                    if (topicInput) topicInput.value = data.topic;
+                    if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-yellow);">🎲 تم اختيار الموضوع: «${data.topic}»</span>`;
+                }
+            } catch (e) {
+                if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">تعذر جلب موضوع عشوائي</span>`;
+            }
+        }
+
+        async function startBotArenaFromWebApp() {
+            const cid = getTargetArenaChatId();
+            const feedbackEl = document.getElementById('arena-status-feedback');
+            if (!cid) {
+                if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">⚠️ يرجى اختيار جروب أو كتابة Chat ID الجروب أولاً (أو أرسل /bots_chat داخل الجروب).</span>`;
+                return;
+            }
+            const topic = (document.getElementById('arena-topic-input')?.value || '').trim();
+            if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-blue);">⏳ جاري إطلاق ساحة حوار البوتات الحي في الجروب...</span>`;
+            try {
+                const res = await fetch('/api/webapp/arena/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: tgUser.id,
+                        chat_id: cid,
+                        rounds: _arenaSelectedRounds,
+                        topic: topic
+                    })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-green);">✅ ${data.message}</span>`;
+                    await loadBotArenaStatus();
+                } else {
+                    if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(data)}</span>`;
+                }
+            } catch (e) {
+                if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">❌ فشل الاتصال بالسيرفر</span>`;
+            }
+        }
+
+        async function stopBotArenaFromWebApp() {
+            const cid = getTargetArenaChatId();
+            const feedbackEl = document.getElementById('arena-status-feedback');
+            if (!cid) {
+                if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">⚠️ اختر الجروب المراد إيقاف الحوار فيه أولاً.</span>`;
+                return;
+            }
+            try {
+                const res = await fetch('/api/webapp/arena/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, chat_id: cid })
+                });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-yellow);">${data.message}</span>`;
+                    await loadBotArenaStatus();
+                } else {
+                    if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(data)}</span>`;
+                }
+            } catch (e) {
+                if (feedbackEl) feedbackEl.innerHTML = `<span style="color:var(--neon-red);">❌ فشل الاتصال بالسيرفر</span>`;
+            }
+        }
+
+        // ==========================================
+        // Bot Factory (Official Bot vs Userbot)
+        // ==========================================
+        function switchFactoryCreateMode(mode) {
+            document.getElementById('f-tab-btn-bot').classList.toggle('active', mode === 'bot');
+            document.getElementById('f-tab-btn-userbot').classList.toggle('active', mode === 'userbot');
+            document.getElementById('f-mode-bot').style.display = mode === 'bot' ? 'block' : 'none';
+            document.getElementById('f-mode-userbot').style.display = mode === 'userbot' ? 'block' : 'none';
+        }
+
+        let _fleetBotsCache = {};
+
+        async function createOfficialBot() {
+            const name = document.getElementById('factory-bot-name').value.trim();
+            const gender = document.getElementById('factory-bot-gender').value;
+            const dialect = document.getElementById('factory-bot-dialect').value.trim();
+            const origin = document.getElementById('factory-bot-origin').value.trim();
+            const role = document.getElementById('factory-bot-role').value.trim();
+            const age = parseInt(document.getElementById('factory-bot-age').value) || 21;
+            const token = document.getElementById('factory-bot-token').value.trim();
+            const prompt = document.getElementById('factory-bot-prompt').value.trim();
+            const chattiness = parseFloat(document.getElementById('factory-bot-chattiness').value) || 0.5;
+            const voiceProfile = document.getElementById('factory-bot-voice-profile').value.trim() || null;
+            const pitch = parseInt(document.getElementById('factory-bot-pitch').value) || 0;
+            const rate = parseInt(document.getElementById('factory-bot-rate').value) || 0;
+            const fb = document.getElementById('factory-bot-feedback');
+
+            if (!name || !token) {
+                alert('الرجاء إدخال اسم البوت وتوكن BotFather');
+                return;
+            }
+
+            fb.innerHTML = 'جاري بناء وتفعيل البوت في المصنع... ⏳';
+
+            try {
+                const res = await fetch('/api/webapp/factory/create', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: tgUser.id,
+                        instance_id: 'bot_' + Date.now(),
+                        name: name,
+                        bot_type: 'OFFICIAL_BOT',
+                        token_or_session: token,
+                        gender: gender,
+                        age: age,
+                        bio: role,
+                        dialect: dialect,
+                        origin_location: origin,
+                        chattiness_level: chattiness,
+                        voice_profile: voiceProfile,
+                        voice_pitch: pitch,
+                        voice_rate: rate,
+                        custom_prompt: prompt
+                    })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    fb.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                    document.getElementById('factory-bot-name').value = '';
+                    document.getElementById('factory-bot-token').value = '';
+                    document.getElementById('factory-bot-prompt').value = '';
+                    if (d.bot && d.bot.instance_id) {
+                        activeBotId = d.bot.instance_id;
+                    }
+                    if (d.identity) {
+                        applyHeaderIdentity(d.identity);
+                    }
+                    await loadFactoryBots();
+                    await fetchState();
+                } else {
+                    fb.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(d)}</span>`;
+                }
+            } catch (e) {
+                fb.innerHTML = '<span style="color:var(--neon-red);">❌ خطأ في الاتصال بسيرفر المصنع</span>';
+            }
+        }
+
+        // Factory Userbot Phone OTP Handlers
+        function pressFKey(num) {
+            if (currentFOTP.length < 5) currentFOTP += num;
+            updateFOTPView();
+        }
+        function backspaceFOTP() {
+            currentFOTP = currentFOTP.slice(0, -1);
+            updateFOTPView();
+        }
+        function clearFOTP() {
+            currentFOTP = "";
+            updateFOTPView();
+        }
+        function updateFOTPView() {
+            let padded = currentFOTP.padEnd(5, '_');
+            document.getElementById('f-otp-view').innerText = padded.split('').join(' ');
+        }
+
+        async function requestUserbotOTP() {
+            const phone = document.getElementById('factory-ub-phone').value.trim();
+            const fb = document.getElementById('factory-ub-feedback');
+            if (!phone) { alert('اكتب رقم الهاتف الدولي'); return; }
+
+            fb.innerHTML = 'جاري إرسال كود التفعيل عبر MTProto... ⏳';
+            try {
+                const res = await fetch('/api/webapp/mtproto/send_code', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, phone: phone })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    fb.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                    document.getElementById('ub-otp-box').style.display = 'block';
+                } else {
+                    fb.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(d, 'فشل طلب الكود')}</span>`;
+                }
+            } catch (e) {
+                fb.innerHTML = '<span style="color:var(--neon-red);">❌ خطأ أثناء طلب الكود</span>';
+            }
+        }
+
+        async function submitUserbotOTP() {
+            const fb = document.getElementById('factory-ub-feedback');
+            if (currentFOTP.length < 5) { alert('أدخل الكود كاملاً (5 أرقام)'); return; }
+            fb.innerHTML = 'جاري توثيق الجلسة وتفعيل الحساب... ⏳';
+            try {
+                const res = await fetch('/api/webapp/mtproto/verify_otp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, code: currentFOTP })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    if (d.needs_2fa) {
+                        fb.innerHTML = '<span style="color:var(--neon-yellow);">الحساب محمي بكلمة سر بخطوتين (2FA)</span>';
+                        document.getElementById('ub-2fa-box').style.display = 'block';
+                    } else {
+                        fb.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                        loadFactoryBots();
+                    }
+                } else {
+                    fb.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(d, 'كود خاطئ')}</span>`;
+                }
+            } catch (e) {
+                fb.innerHTML = '<span style="color:var(--neon-red);">❌ فشل التحقق من الكود</span>';
+            }
+        }
+
+        async function submitUserbot2FA() {
+            const pass = document.getElementById('factory-ub-2fa').value;
+            const fb = document.getElementById('factory-ub-feedback');
+            fb.innerHTML = 'جاري التحقق من كلمة السر بخطوتين... ⏳';
+            try {
+                const res = await fetch('/api/webapp/mtproto/verify_2fa', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, password: pass })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    fb.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                    loadFactoryBots();
+                } else {
+                    fb.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(d)}</span>`;
+                }
+            } catch (e) {
+                fb.innerHTML = '<span style="color:var(--neon-red);">❌ فشل التحقق من 2FA</span>';
+            }
+        }
+
+        async function loadFactoryBots() {
+            if (!isKingUser) return;
+            const wrap = document.getElementById('factory-bots-list');
+            try {
+                const res = await fetch(`/api/webapp/factory/bots?user_id=${tgUser.id}`);
+                const data = await res.json();
+                wrap.innerHTML = '';
+                if (!data.bots || !data.bots.length) {
+                    wrap.innerHTML = '<div style="color:var(--text-muted); font-size:12px; text-align:center;">لا توجد بوتات مسجلة بعد في المصنع.</div>';
+                    return;
+                }
+                _fleetBotsCache = {};
+                renderHeaderBotSwitcher(data.bots);
+                data.bots.forEach(b => {
+                    _fleetBotsCache[b.instance_id] = b;
+                    const card = document.createElement('div');
+                    card.className = 'factory-bot-card glass';
+                    const isCurrentHeaderBot = (activeBotId && activeBotId === b.instance_id) || (!activeBotId && b.instance_id === 'master_omar_official');
+                    if (isCurrentHeaderBot) {
+                        card.style.border = '1px solid rgba(0, 210, 255, 0.55)';
+                        card.style.boxShadow = '0 0 12px rgba(0, 210, 255, 0.14)';
+                    }
+                    const isFemale = (b.gender || '').toUpperCase() === 'FEMALE';
+                    const isUserbot = (b.bot_type || '').includes('USERBOT');
+                    const bFlag = b.flag || '🌐';
+                    const bLoc = b.capsule_location || b.origin_location || b.country_ar || 'القاهرة';
+                    const liveBotTime = computeBotTimeFromUTC(b.iana_timezone, b.utc_offset_hours);
+                    const dialectInfo = b.primary_dialect ? ` • ${b.primary_dialect}` : '';
+                    card.innerHTML = `
+                        <div class="bot-meta" style="cursor:pointer;" onclick="switchActiveBot('${b.instance_id}')" title="اضغط لعرض هذا البوت وتوقيت بلده في الكبسولة العلوية">
+                            <h4>${b.name} ${isFemale ? '👧' : '👦'} <span style="font-size:11px; background:rgba(255,255,255,0.07); padding:2px 7px; border-radius:10px; font-weight:700;">${bFlag} (${bLoc}) • 🕒 ${liveBotTime}</span></h4>
+                            <p>${isUserbot ? '👤 يوزربوت تيليجرام' : '🤖 بوت رسمي'}${dialectInfo} • <strong style="color:${b.is_active ? 'var(--neon-green)' : 'var(--text-muted)'};">${b.is_active ? '🟢 نشط' : '⚪ متوقف'}</strong></p>
+                        </div>
+                        <div class="bot-actions">
+                            <button class="btn-small" style="color:${isCurrentHeaderBot ? 'var(--neon-green)' : 'var(--neon-yellow)'};" onclick="switchActiveBot('${b.instance_id}')">
+                                ${isCurrentHeaderBot ? '✅ معروض بالأعلى' : '👁️ عرض بالكبسولة'}
+                            </button>
+                            <button class="btn-small ${isFemale ? 'btn-gender-female' : 'btn-gender-male'}" onclick="toggleBotGender('${b.instance_id}', '${isFemale ? 'MALE' : 'FEMALE'}')">
+                                ${isFemale ? 'ولد 👦' : 'بنت 👧'}
+                            </button>
+                            <button class="btn-small" style="color:var(--neon-blue);" onclick="openEditModal('${b.instance_id}')">
+                                ✏️ تعديل (الاسم/الصورة/البايو)
+                            </button>
+                            ${isSupremeKing ? `<button class="btn-small" style="color:var(--neon-green);" onclick="jumpToModAccount('${b.instance_id}')">
+                                📱 تليجرام بلس
+                            </button>` : ''}
+                            <button class="btn-small" style="color:var(--neon-red);" onclick="deleteBot('${b.instance_id}')">
+                                🗑️
+                            </button>
+                        </div>
+                    `;
+                    wrap.appendChild(card);
+                });
+            } catch (e) {
+                wrap.innerHTML = '<div style="color:var(--neon-red); font-size:12px;">فشل تحميل أسطول البوتات.</div>';
+            }
+        }
+
+        async function toggleBotGender(instanceId, newGender) {
+            const res = await fetch('/api/webapp/factory/toggle_gender', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, instance_id: instanceId, gender: newGender })
+            });
+            const d = await res.json();
+            if (res.ok) {
+                if (activeBotId === instanceId && d.identity) {
+                    applyHeaderIdentity(d.identity);
+                }
+                await loadFactoryBots();
+                await fetchState();
+            }
+            else alert(formatError(d));
+        }
+
+        async function deleteBot(instanceId) {
+            if (!confirm('هل أنت متأكد من حذف هذا البوت/اليوزربوت من المصنع؟')) return;
+            const res = await fetch('/api/webapp/factory/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, instance_id: instanceId })
+            });
+            const d = await res.json();
+            if (res.ok) loadFactoryBots();
+            else alert(formatError(d));
+        }
+
+        function openEditModal(id) {
+            const b = _fleetBotsCache[id] || {};
+            document.getElementById('edit-bot-id').value = id;
+            document.getElementById('edit-bot-name').value = b.name || '';
+            document.getElementById('edit-bot-gender').value = (b.gender || 'MALE').toUpperCase();
+            document.getElementById('edit-bot-age').value = b.age || 21;
+            document.getElementById('edit-bot-dialect').value = b.primary_dialect || '';
+            document.getElementById('edit-bot-origin').value = b.origin_location || '';
+            const chattiness = (b.chattiness_level !== undefined) ? b.chattiness_level : 0.5;
+            document.getElementById('edit-bot-chattiness').value = chattiness;
+            document.getElementById('edit-chattiness-val').innerText = parseFloat(chattiness).toFixed(2);
+            document.getElementById('edit-bot-voice-profile').value = b.voice_profile || '';
+            const pitch = b.voice_pitch || 0;
+            const rate = b.voice_rate || 0;
+            document.getElementById('edit-bot-pitch').value = pitch;
+            document.getElementById('edit-pitch-val').innerText = (pitch > 0 ? '+' : '') + pitch + 'Hz';
+            document.getElementById('edit-bot-rate').value = rate;
+            document.getElementById('edit-rate-val').innerText = (rate > 0 ? '+' : '') + rate + '%';
+            document.getElementById('edit-bot-bio').value = b.bio || '';
+            document.getElementById('edit-bot-prompt').value = b.system_prompt || '';
+            const photoInput = document.getElementById('edit-bot-photo-file');
+            if (photoInput) photoInput.value = '';
+            const photoSt = document.getElementById('edit-bot-photo-status');
+            if (photoSt) photoSt.innerText = 'اختر صورة لتحديث صورة بروفايل البوت مباشرة في تليجرام عند الحفظ';
+            document.getElementById('modal-edit-bot').style.display = 'flex';
+        }
+
+        function closeEditModal() {
+            document.getElementById('modal-edit-bot').style.display = 'none';
+        }
+
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        async function saveEditedBot() {
+            const id = document.getElementById('edit-bot-id').value;
+            const name = document.getElementById('edit-bot-name').value.trim();
+            const gender = document.getElementById('edit-bot-gender').value;
+            const age = parseInt(document.getElementById('edit-bot-age').value) || 21;
+            const dialect = document.getElementById('edit-bot-dialect').value.trim();
+            const origin = document.getElementById('edit-bot-origin').value.trim();
+            const chattiness = parseFloat(document.getElementById('edit-bot-chattiness').value) || 0.5;
+            const voiceProfile = document.getElementById('edit-bot-voice-profile').value.trim() || null;
+            const pitch = parseInt(document.getElementById('edit-bot-pitch').value) || 0;
+            const rate = parseInt(document.getElementById('edit-bot-rate').value) || 0;
+            const bio = document.getElementById('edit-bot-bio').value.trim();
+            const prompt = document.getElementById('edit-bot-prompt').value.trim();
+            const photoInput = document.getElementById('edit-bot-photo-file');
+            const photoSt = document.getElementById('edit-bot-photo-status');
+
+            if (photoInput && photoInput.files && photoInput.files[0]) {
+                try {
+                    if (photoSt) photoSt.innerHTML = '<span style="color:var(--neon-blue);">⏳ جاري رفع صورة البوت إلى BotFather...</span>';
+                    const b64 = await readFileAsBase64(photoInput.files[0]);
+                    const pRes = await fetch('/api/webapp/factory/upload_photo', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            user_id: tgUser.id,
+                            instance_id: id,
+                            image_base64: b64
+                        })
+                    });
+                    const pData = await pRes.json();
+                    if (!pRes.ok) {
+                        alert(formatError(pData, 'تعذر رفع صورة البوت إلى تليجرام'));
+                    }
+                } catch (err) {
+                    console.error("Bot photo upload error:", err);
+                }
+            }
+
+            const res = await fetch('/api/webapp/factory/update', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    user_id: tgUser.id,
+                    instance_id: id,
+                    name: name,
+                    gender: gender,
+                    age: age,
+                    bio: bio,
+                    system_prompt: prompt,
+                    primary_dialect: dialect,
+                    origin_location: origin,
+                    chattiness_level: chattiness,
+                    voice_profile: voiceProfile,
+                    voice_pitch: pitch,
+                    voice_rate: rate
+                })
+            });
+            const d = await res.json();
+            if (res.ok) {
+                closeEditModal();
+                // Automatically switch active header capsule to the edited bot so the user sees its updated country/flag/time immediately!
+                activeBotId = id;
+                try { localStorage.setItem('aether_selected_bot_id', id); } catch (e) {}
+                if (d.identity) {
+                    applyHeaderIdentity(d.identity);
+                }
+                await loadFactoryBots();
+                await fetchState();
+            } else {
+                alert(formatError(d));
+            }
+        }
+
+        function jumpToModAccount(accId) {
+            switchTab('view-aethergram', document.querySelector('.tab-bar .king-only:last-child'));
+            const sel = document.getElementById('mod-account-select');
+            if (sel) {
+                sel.value = accId;
+                activeModAccountId = accId;
+                loadModChats();
+            }
+        }
+
+        // ==========================================
+        // AetherGram Mod Telegram Client (King Only)
+        // ==========================================
+        async function loadModAccountsAndChats() {
+            if (!isKingUser) return;
+            const sel = document.getElementById('mod-account-select');
+            try {
+                const res = await fetch(`/api/webapp/aethergram/accounts?user_id=${tgUser.id}`);
+                const data = await res.json();
+                if (data.ok && data.accounts) {
+                    sel.innerHTML = '';
+                    data.accounts.forEach(a => {
+                        const opt = document.createElement('option');
+                        opt.value = a.id;
+                        opt.innerText = `${a.avatar_icon || '👤'} ${a.name} (${a.status})`;
+                        sel.appendChild(opt);
+                    });
+                    if (sel.options.length > 0) {
+                        activeModAccountId = sel.value;
+                    }
+                }
+            } catch (e) { console.error("Accounts load error:", e); }
+            loadModChats();
+        }
+
+        function onModAccountChanged(val) {
+            activeModAccountId = val;
+            const sel = document.getElementById('mod-account-select');
+            const st = document.getElementById('mod-active-acc-status');
+            if (st && sel && sel.selectedIndex >= 0) {
+                const txt = sel.options[sel.selectedIndex].innerText;
+                st.innerText = txt.includes('نشط') || txt.includes('متصل') ? '🟢 نشط وجاهز' : '⚪ تم الاختيار';
+            }
+            loadModChats();
+        }
+
+        function openManualChat() {
+            const raw = document.getElementById('mod-manual-chat-id').value.trim();
+            if (!raw) { alert('اكتب أيدي الشات أو الحساب أو المعرف'); return; }
+            const chatId = parseInt(raw) || raw;
+            openModChat({ id: chatId, chat_id: chatId, title: `شات: ${raw}` });
+        }
+
+        async function loadModChats(folder = 'all') {
+            const wrap = document.getElementById('mod-chats-container');
+            wrap.innerHTML = '<div style="font-size:12px; color:var(--text-muted); text-align:center; padding:20px;">جاري جلب المحادثات الحية... ⏳</div>';
+            try {
+                const res = await fetch(`/api/webapp/aethergram/chats?user_id=${tgUser.id}&account=${activeModAccountId}&folder=${folder}`);
+                const data = await res.json();
+                allModChatsCache = data.chats || [];
+                renderModChats(allModChatsCache);
+                
+                // Update badge counts
+                const countBadge = document.getElementById(`badge-${folder}`);
+                if (countBadge) countBadge.innerText = allModChatsCache.length;
+            } catch (e) {
+                wrap.innerHTML = '<div style="font-size:12px; color:var(--neon-red); text-align:center; padding:20px;">فشل جلب المحادثات. تأكد من تفعيل الحساب في مصنع البوتات.</div>';
+            }
+        }
+
+        async function openModChat(c) {
+            activeModChatId = (c.id !== undefined && c.id !== null) ? c.id : c.chat_id;
+            document.getElementById('mod-chat-title').innerText = c.title || `شات ${activeModChatId}`;
+            const init = (c.title || 'ش')[0];
+            const av = document.getElementById('chat-header-avatar');
+            if (av) av.innerText = init;
+            
+            document.getElementById('mod-active-chat-view').style.display = 'flex';
+
+            try {
+                const xr = await fetch(`/api/webapp/aethergram/chat/${activeModChatId}/xray?user_id=${tgUser.id}`);
+                const xd = await xr.json();
+                const sub = document.getElementById('chat-live-sub');
+                if (xd && xd.affinity_score !== undefined && sub) {
+                    const aff = Math.round(xd.affinity_score);
+                    sub.innerHTML = `💚 المعزة: ${aff}% | 😊 المزاج: رايق`;
+                }
+            } catch(e) {}
+
+            loadModMessages(activeModChatId);
+        }
+
+        function closeModActiveChat() {
+            activeModChatId = null;
+            document.getElementById('mod-chat-list-view').style.display = 'block';
+            document.getElementById('mod-active-chat-view').style.display = 'none';
+        }
+
+        async function loadModMessages(chatId) {
+            const feed = document.getElementById('mod-messages-feed');
+            feed.innerHTML = '<div style="text-align:center; font-size:11px; color:var(--text-muted); padding:10px;">تحميل الرسائل الحية عبر MTProto... ⏳</div>';
+            try {
+                const res = await fetch(`/api/webapp/aethergram/chat/${chatId}/messages?user_id=${tgUser.id}&account=${activeModAccountId}&limit=50`);
+                const data = await res.json();
+                feed.innerHTML = '';
+                if (!data.messages || !data.messages.length) {
+                    feed.innerHTML = '<div style="text-align:center; font-size:11px; color:var(--text-muted); padding:10px;">لا توجد رسائل مسجلة في هذه المحادثة.</div>';
+                    return;
+                }
+                data.messages.forEach(m => {
+                    const b = document.createElement('div');
+                    let cls = 'mod-bubble ' + (m.is_outgoing ? 'out' : 'in');
+                    if (m.is_deleted) cls += ' deleted';
+                    if (m.is_edited) cls += ' edited';
+                    b.className = cls;
+                    let inner = '';
+                    if (m.is_deleted) inner += '<span class="mod-tag-del">🗑️ [رُصدت محذوفة بالشبح - Anti-Delete]</span>';
+                    
+                    if (!m.is_outgoing && m.sender_name) {
+                        inner += `<div style="font-size:10px; font-weight:700; color:var(--neon-blue); margin-bottom:2px;">${m.sender_name}</div>`;
+                    }
+
+                    // Media rendering
+                    if (m.media_type === 'photo') {
+                        inner += `<div style="margin-bottom:4px;"><span style="font-size:12px;">🖼️ <strong>[صورة]</strong></span><div style="font-size:12px; margin-top:2px;">${m.text !== '[صورة]' ? m.text : ''}</div></div>`;
+                    } else if (m.media_type === 'voice') {
+                        inner += `
+                            <div style="margin: 4px 0;">
+                                <audio controls src="/api/webapp/aethergram/media/${m.id}" style="width: 100%; max-width: 230px; height: 32px; border-radius: 8px;"></audio>
+                            </div>
+                            <div class="audio-player-box" style="display:none;">
+                                <span style="font-size:16px;">▶️</span>
+                                <span style="font-size:11px; font-weight:700; color:#fff;">0:14 〰️〰️〰️</span>
+                                <span style="font-size:10px; color:var(--text-muted);">تسجيل صوتي</span>
+                            </div>
+                        `;
+                    } else {
+                        inner += `<div>${m.text}</div>`;
+                    }
+
+                    if (m.is_edited && m.original_text) inner += `<span class="mod-tag-edit">✏️ [نص معدل - الأصل: ${m.original_text}]</span>`;
+                    if (m.is_outgoing) {
+                        inner += `<div style="display:flex; justify-content:space-between; align-items:center; font-size:9.5px; opacity:0.8; margin-top:4px;">
+                            <span class="seen-check">✓✓ Seen</span>
+                            <span>${m.date || ''}</span>
+                        </div>`;
+                    } else if (m.date) {
+                        inner += `<div style="text-align:left; font-size:9.5px; opacity:0.6; margin-top:3px;">${m.date}</div>`;
+                    }
+                    b.innerHTML = inner;
+                    feed.appendChild(b);
+                });
+                feed.scrollTop = feed.scrollHeight;
+            } catch(e) { feed.innerHTML = '<div style="color:var(--neon-red); text-align:center; font-size:11px;">فشل جلب الرسائل من تليجرام.</div>'; }
+        }
+
+        async function sendModMessage() {
+            const input = document.getElementById('mod-reply-input');
+            const text = input.value.trim();
+            if (!text || !activeModChatId) return;
+            input.value = '';
+            await fetch(`/api/webapp/aethergram/chat/${activeModChatId}/send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, text: text, account_type: activeModAccountId })
+            });
+            loadModMessages(activeModChatId);
+        }
+
+        async function suggestAIReply() {
+            if (!activeModChatId) return;
+            const res = await fetch(`/api/webapp/aethergram/chat/${activeModChatId}/suggest_reply`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            const d = await res.json();
+            if (d.suggested_text) {
+                document.getElementById('mod-reply-input').value = d.suggested_text;
+            }
+        }
+
+        async function toggleModChatAI() {
+            if (!activeModChatId) return;
+            activeModAutoAI = !activeModAutoAI;
+            const btn = document.getElementById('mod-ai-toggle-btn');
+            btn.innerText = `🤖 رد تلقائي: ${activeModAutoAI ? 'نعم' : 'لا'}`;
+            await fetch(`/api/webapp/aethergram/chat/${activeModChatId}/toggle_ai`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, enabled: activeModAutoAI })
+            });
+        }
+
+        async function promoteKingInGroup() {
+            if (!activeModChatId) return;
+            const res = await fetch(`/api/webapp/aethergram/group/${activeModChatId}/add_king`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, promote: true })
+            });
+            const d = await res.json();
+            alert(formatError(d));
+        }
+
+        async function joinKingToGroup() {
+            if (!activeModChatId) return;
+            const res = await fetch(`/api/webapp/aethergram/group/${activeModChatId}/add_king`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, promote: false })
+            });
+            const d = await res.json();
+            alert(formatError(d));
+        }
+
+        function filterModFolder(f, btn) {
+            btn.parentElement.querySelectorAll('.pill-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            loadModChats(f);
+        }
+
+        async function toggleGhostMode(enabled) {
+            await fetch('/api/webapp/aethergram/ghost_mode', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, enabled: enabled })
+            });
+        }
+
+        // ==========================================
+        // Persona Studio & Commands
+        // ==========================================
+        async function loadPersonaConfig() {
+            try {
+                const res = await fetch(`/api/webapp/persona?user_id=${tgUser.id}`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    const p = data.persona;
+                    document.getElementById('p-name').value = p.persona_name || '';
+                    document.getElementById('p-gender').value = p.gender || 'male';
+                    document.getElementById('p-dialect').value = p.dialect || 'egyptian_syrian';
+                    document.getElementById('p-tone').value = p.tone || 'witty_and_warm';
+                    document.getElementById('p-prompt').value = p.custom_system_prompt || '';
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function savePersonaConfig() {
+            const st = document.getElementById('p-status');
+            st.innerHTML = 'جاري الحفظ والتطبيق... ⏳';
+            try {
+                const res = await fetch('/api/webapp/persona/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: tgUser.id,
+                        persona_name: document.getElementById('p-name').value,
+                        gender: document.getElementById('p-gender').value,
+                        dialect: document.getElementById('p-dialect').value,
+                        tone: document.getElementById('p-tone').value,
+                        custom_system_prompt: document.getElementById('p-prompt').value
+                    })
+                });
+                const d = await res.json();
+                st.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                await fetchState();
+            } catch (e) {
+                st.innerHTML = '<span style="color:var(--neon-red);">❌ فشل حفظ الشخصية</span>';
+            }
+        }
+
+        async function resetPersonaConfig() {
+            if (!confirm('هل أنت متأكد من استعادة شخصية عمر الافتراضية؟')) return;
+            const res = await fetch('/api/webapp/persona/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            const d = await res.json();
+            alert(formatError(d));
+            loadPersonaConfig();
+            await fetchState();
+        }
+
+        async function cloneStyleDNA() {
+            const text = document.getElementById('dna-sample-text').value;
+            const resBox = document.getElementById('dna-result');
+            if (!text || text.length < 5) { alert('اكتب نصاً أطول لتحليله'); return; }
+            resBox.innerHTML = 'جاري قراءة وتحليل البصمة اللغوية... ⏳';
+            try {
+                const res = await fetch('/api/webapp/persona/clone_style', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, sample_text: text })
+                });
+                const d = await res.json();
+                if (res.ok) {
+                    resBox.innerHTML = `
+                        <div style="color:var(--neon-green); font-weight:700; margin-bottom:4px;">✅ ${d.message}</div>
+                        <div style="color:var(--text-muted);">اللهجة المكتشفة: <strong>${d.cloned_dna.dominant_dialect}</strong></div>
+                        <div style="margin-top:4px;">الكلمات واللزمات المستنسخة: ${d.cloned_dna.favorite_words.join('، ')}</div>
+                    `;
+                } else {
+                    resBox.innerHTML = `<span style="color:var(--neon-red);">❌ ${formatError(d)}</span>`;
+                }
+            } catch (e) { resBox.innerHTML = 'حدث خطأ أثناء الاستنساخ.'; }
+        }
+
+        async function loadCustomCommands() {
+            const wrap = document.getElementById('cmds-list');
+            wrap.innerHTML = 'جاري التحميل...';
+            try {
+                const res = await fetch(`/api/webapp/commands?user_id=${tgUser.id}`);
+                const data = await res.json();
+                wrap.innerHTML = '';
+                if (!data.commands || !data.commands.length) {
+                    wrap.innerHTML = '<div style="color:var(--text-muted); font-size:11.5px;">لا توجد أوامر مخصصة بعد. أضف أمرك الأول بالأعلى!</div>';
+                    return;
+                }
+                data.commands.forEach(c => {
+                    const row = document.createElement('div');
+                    row.className = 'glass';
+                    row.style.padding = '8px 12px';
+                    row.style.marginBottom = '6px';
+                    row.style.display = 'flex';
+                    row.style.justifyContent = 'space-between';
+                    row.style.alignItems = 'center';
+                    row.innerHTML = `
+                        <div>
+                            <span style="color:var(--neon-blue); font-weight:700;">${c.trigger}</span>
+                            <div style="font-size:11px; color:var(--text-muted);">${c.response_template}</div>
+                        </div>
+                        <button class="pill-btn" style="color:var(--neon-red); border-color:var(--neon-red); padding:3px 8px;" onclick="deleteCustomCmd('${c.trigger}')">حذف 🗑️</button>
+                    `;
+                    wrap.appendChild(row);
+                });
+            } catch (e) { wrap.innerHTML = 'فشل تحميل الأوامر.'; }
+        }
+
+        async function addCustomCommand() {
+            const trig = document.getElementById('cmd-trigger').value.trim();
+            const tmpl = document.getElementById('cmd-template').value.trim();
+            if (!trig || !tmpl) { alert('يرجى ملء الكلمة المفتاحية والرد'); return; }
+            await fetch('/api/webapp/commands/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, trigger: trig, response_template: tmpl })
+            });
+            document.getElementById('cmd-trigger').value = '';
+            document.getElementById('cmd-template').value = '';
+            loadCustomCommands();
+        }
+
+        async function deleteCustomCmd(trigger) {
+            if (!confirm(`هل أنت متأكد من حذف الأمر ${trigger}؟`)) return;
+            await fetch('/api/webapp/commands/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, trigger: trigger })
+            });
+            loadCustomCommands();
+        }
+
+        
+        let allModChatsCache = [];
+
+        function toggleAccountMenu() {
+            const menu = document.getElementById('mod-acc-dropdown');
+            if (menu) menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function toggleSearchBar() {
+            const bar = document.getElementById('mod-search-bar');
+            if (bar) {
+                bar.style.display = bar.style.display === 'none' ? 'block' : 'none';
+                if (bar.style.display === 'block') {
+                    document.getElementById('mod-search-input').focus();
+                }
+            }
+        }
+
+        function toggleChatOptionsMenu() {
+            const m = document.getElementById('chat-options-menu');
+            if (m) m.style.display = m.style.display === 'none' ? 'block' : 'none';
+        }
+
+        function selectModAccount(accId, accName) {
+            activeModAccountId = accId;
+            document.getElementById('appbar-account-name').innerText = accName;
+            document.getElementById('mod-acc-dropdown').style.display = 'none';
+            loadModChats();
+        }
+
+        function filterChatList(query) {
+            const q = query.trim().toLowerCase();
+            const wrap = document.getElementById('mod-chats-container');
+            if (!q) {
+                renderModChats(allModChatsCache);
+                return;
+            }
+            const filtered = allModChatsCache.filter(c => 
+                (c.title && c.title.toLowerCase().includes(q)) || 
+                (c.id && String(c.id).includes(q)) ||
+                (c.last_message && c.last_message.toLowerCase().includes(q))
+            );
+            renderModChats(filtered);
+        }
+
+        function renderModChats(chats) {
+            const wrap = document.getElementById('mod-chats-container');
+            wrap.innerHTML = '';
+            if (!chats || !chats.length) {
+                wrap.innerHTML = '<div style="font-size:12px; color:var(--text-muted); text-align:center; padding: 20px;">لا توجد محادثات مطابقة.</div>';
+                return;
+            }
+            chats.forEach(c => {
+                const row = document.createElement('div');
+                row.className = 'telegram-chat-item';
+                row.onclick = () => openModChat(c);
+                const init = (c.title || 'شات')[0];
+                row.innerHTML = `
+                    <img src="/api/webapp/aethergram/avatar/${activeModAccountId}/${c.id}" class="tg-avatar-img" onerror="this.onerror=null; this.src='/api/webapp/aethergram/avatar/' + activeModAccountId + '/' + c.id;" onclick="event.stopPropagation(); openAvatarViewer(this.src, \'' + (c.title||'') + '\')">
+                    <div style="flex:1; overflow:hidden;">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <div style="font-size:13.5px; font-weight:700; color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${c.title}</div>
+                            <div style="font-size:10px; color:var(--text-muted);">${c.time_str || c.time || ''}</div>
+                        </div>
+                        <div style="font-size:11.5px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px;">
+                            ${c.is_deleted ? '<span style="color:var(--neon-red); font-weight:700;">[🗑️ محذوفة] </span>' : ''}${c.last_message || '...'}
+                        </div>
+                    </div>
+                    ${c.unread_count ? `<span class="badge-counter">${c.unread_count}</span>` : ''}
+                `;
+                wrap.appendChild(row);
+            });
+        }
+
+        // ==========================================
+        // Memory Vault, Debate & Voice Calls
+        // ==========================================
+        async function loadTimeCapsules() {
+            const wrap = document.getElementById('capsules-list');
+            try {
+                const res = await fetch(`/api/webapp/vault/capsule/list?user_id=${tgUser.id}`);
+                const data = await res.json();
+                wrap.innerHTML = '';
+                if (!data.capsules || !data.capsules.length) {
+                    wrap.innerHTML = '<div style="color:var(--text-muted); font-size:11px;">لا توجد كبسولات مقفلة حالياً.</div>';
+                    return;
+                }
+                data.capsules.forEach(c => {
+                    const el = document.createElement('div');
+                    el.className = 'glass';
+                    el.style.padding = '8px 12px';
+                    el.style.marginBottom = '6px';
+                    el.innerHTML = `
+                        <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted);">
+                            <span>${c.is_ready ? '🔓 جاهزة للفتح!' : '🔒 مقفلة في الخزنة'}</span>
+                            <span>${c.duration_hours} ساعة</span>
+                        </div>
+                        <div style="font-size:12.5px; font-weight:700; margin-top:4px;">${c.is_ready ? c.message : '•••••••••••••••• (محتوى مشفر حتى موعد الفتح)'}</div>
+                    `;
+                    wrap.appendChild(el);
+                });
+            } catch (e) { console.error(e); }
+        }
+
+        async function createTimeCapsule() {
+            const msg = document.getElementById('capsule-msg').value.trim();
+            const hrs = parseInt(document.getElementById('capsule-hours').value);
+            const st = document.getElementById('capsule-status');
+            if (!msg) { alert('اكتب رسالة الكبسولة أولاً'); return; }
+            st.innerHTML = 'جاري القفل والتشفير... ⏳';
+            const res = await fetch('/api/webapp/vault/capsule/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, message: msg, unlock_hours: hrs })
+            });
+            const d = await res.json();
+            st.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                await fetchState();
+            document.getElementById('capsule-msg').value = '';
+            loadTimeCapsules();
+        }
+
+        async function clearMemoryVault() {
+            if (!confirm('هل تريد فعلاً مسح ذاكرة الحوار المؤقتة الخاصة بك؟')) return;
+            const res = await fetch('/api/webapp/vault/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            const d = await res.json();
+            alert(formatError(d));
+        }
+
+        async function startDebate() {
+            const topic = document.getElementById('debate-topic').value.trim();
+            const personaA = (document.getElementById('debate-persona-a') ? document.getElementById('debate-persona-a').value.trim() : '') || 'عمر (المتفائل العبقري)';
+            const personaB = (document.getElementById('debate-persona-b') ? document.getElementById('debate-persona-b').value.trim() : '') || 'سارة (الواقعية الساخرة)';
+            const rounds = parseInt(document.getElementById('debate-rounds') ? document.getElementById('debate-rounds').value : '2') || 2;
+            const sendTg = document.getElementById('debate-send-tg') ? document.getElementById('debate-send-tg').checked : false;
+            const feed = document.getElementById('debate-feed');
+            const load = document.getElementById('debate-loading');
+
+            if (!topic) { alert('اكتب موضوعاً للمناظرة'); return; }
+            load.style.display = 'block';
+            feed.innerHTML = '';
+
+            try {
+                const res = await fetch('/api/webapp/debate/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user_id: tgUser.id,
+                        topic: topic,
+                        persona_a: personaA,
+                        persona_b: personaB,
+                        rounds: rounds,
+                        send_to_telegram: sendTg
+                    })
+                });
+                const d = await res.json();
+                load.style.display = 'none';
+
+                if (!d.transcript || d.transcript.length === 0) {
+                    feed.innerHTML = '<div style="color:var(--neon-red); text-align:center;">لم يتم توليد أي ردود. حاول مجدداً.</div>';
+                    return;
+                }
+
+                d.transcript.forEach((turn, idx) => {
+                    setTimeout(() => {
+                        const box = document.createElement('div');
+                        const isLeft = turn.side === 'left';
+                        box.className = 'debate-turn-box ' + (isLeft ? 'side-left' : 'side-right');
+                        box.innerHTML = `
+                            <div class="debate-avatar">${turn.avatar || (isLeft ? '👦' : '👧')}</div>
+                            <div class="debate-bubble">
+                                <div class="debate-speaker-title">${turn.speaker}</div>
+                                <div>${turn.text}</div>
+                            </div>
+                        `;
+                        feed.appendChild(box);
+                        box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+                        if (idx === d.transcript.length - 1 && d.verdict) {
+                            setTimeout(() => {
+                                const v = document.createElement('div');
+                                v.className = 'debate-verdict-card';
+                                v.innerHTML = `
+                                    <div class="debate-verdict-title">⚖️ حكم المنصة النهائي وخلاصة الحوار</div>
+                                    <div class="debate-verdict-body">"${d.verdict}"</div>
+                                    ${sendTg ? '<div style="font-size:11px; color:var(--neon-green); margin-top:8px;">✅ تم إرسال نسخة من المناظرة لمحادثتك على تليجرام</div>' : ''}
+                                `;
+                                feed.appendChild(v);
+                                v.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                            }, 500);
+                        }
+                    }, idx * 350);
+                });
+            } catch (e) {
+                load.style.display = 'none';
+                feed.innerHTML = '<div style="color:var(--neon-red); text-align:center;">حدث خطأ أثناء إطلاق المناظرة. تأكد من اتصال الخادم.</div>';
+            }
+        }
+
+        async function scheduleVoiceCall() {
+            const mins = parseInt(document.getElementById('voice-mins').value) || 10;
+            const reason = document.getElementById('voice-reason').value || 'مكالمة إيقاظ مجدولة من عمر';
+            const st = document.getElementById('voice-status');
+            st.innerHTML = 'جاري الجدولة... ⏳';
+            const res = await fetch('/api/webapp/voice/schedule_call', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, minutes_from_now: mins, reminder_text: reason })
+            });
+            const d = await res.json();
+            st.innerHTML = `<span style="color:var(--neon-green);">✅ ${d.message}</span>`;
+                await fetchState();
+        }
+
+        // ==========================================
+        // Mini Games
+        // ==========================================
+        let currentQuestionId = null;
+
+        function renderXO(board) {
+            const b = document.getElementById('xo-board');
+            b.innerHTML = '';
+            for (let i = 0; i < 9; i++) {
+                const cell = document.createElement('div');
+                cell.className = 'xo-cell';
+                const v = board[i];
+                cell.innerText = v === 1 ? 'X' : (v === 2 ? 'O' : '');
+                cell.style.color = v === 1 ? 'var(--neon-blue)' : (v === 2 ? 'var(--neon-pink)' : '#fff');
+                cell.onclick = () => moveXO(i);
+                b.appendChild(cell);
+            }
+        }
+
+        async function moveXO(pos) {
+            try {
+                const res = await fetch('/api/webapp/game/xo/move', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ user_id: tgUser.id, position: pos })
+                });
+                const d = await res.json();
+                renderXO(d.board);
+                document.getElementById('xo-status').innerText = d.message;
+            } catch(e) {}
+        }
+
+        async function resetXO() {
+            const res = await fetch('/api/webapp/game/xo/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            const d = await res.json();
+            renderXO(d.board);
+            document.getElementById('xo-status').innerText = d.message;
+        }
+
+        function initC4Grid() {
+            const b = document.getElementById('c4-board');
+            b.innerHTML = '';
+            for (let r = 0; r < 6; r++) {
+                for (let c = 0; c < 7; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'c4-cell';
+                    cell.id = `c4-${r}-${c}`;
+                    cell.onclick = () => moveC4(c);
+                    b.appendChild(cell);
+                }
+            }
+        }
+
+        async function moveC4(col) {
+            const res = await fetch('/api/webapp/game/c4/move', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, column: col })
+            });
+            const d = await res.json();
+            for (let r = 0; r < 6; r++) {
+                for (let c = 0; c < 7; c++) {
+                    const el = document.getElementById(`c4-${r}-${c}`);
+                    const v = d.board[r][c];
+                    el.style.background = v === 1 ? 'var(--neon-red)' : (v === 2 ? 'var(--neon-yellow)' : '#050e18');
+                }
+            }
+            document.getElementById('c4-status').innerText = d.message;
+        }
+
+        async function resetC4() {
+            const res = await fetch('/api/webapp/game/c4/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            const d = await res.json();
+            initC4Grid();
+            document.getElementById('c4-status').innerText = d.message;
+        }
+
+        async function loadTriviaQuestion() {
+            try {
+                const res = await fetch('/api/webapp/game/trivia/question');
+                const d = await res.json();
+                currentQuestionId = d.id;
+                document.getElementById('trivia-question').innerText = d.question;
+                const opts = document.getElementById('trivia-options');
+                opts.innerHTML = '';
+                d.options.forEach((opt, idx) => {
+                    const btn = document.createElement('button');
+                    btn.className = 'btn-action';
+                    btn.style.background = 'rgba(255,255,255,0.06)';
+                    btn.style.border = '1px solid var(--border-card)';
+                    btn.style.justifyContent = 'flex-start';
+                    btn.innerText = `${idx + 1}. ${opt}`;
+                    btn.onclick = () => submitTrivia(idx);
+                    opts.appendChild(btn);
+                });
+            } catch(e) {}
+        }
+
+        async function submitTrivia(ans) {
+            const res = await fetch('/api/webapp/game/trivia/answer', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, question_id: currentQuestionId, selected_index: ans })
+            });
+            const d = await res.json();
+            document.getElementById('trivia-streak').innerText = `🔥 السلسلة: ${d.current_streak}`;
+            alert((d.is_correct ? '✅ إجابة صحيحة عبقرية!' : '❌ إجابة خاطئة!') + ` ${d.explanation}`);
+            loadTriviaQuestion();
+        }
+
+        async function submitGuess() {
+            const val = parseInt(document.getElementById('guess-input').value);
+            const fb = document.getElementById('guess-feedback');
+            if (!val) return;
+            const res = await fetch('/api/webapp/game/guess/submit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, guess: val })
+            });
+            const d = await res.json();
+            fb.innerHTML = `<span style="color:${d.is_correct ? 'var(--neon-green)' : 'var(--neon-yellow)'};">${d.message}</span>`;
+            if (d.is_correct) setTimeout(resetGuess, 2500);
+        }
+
+        async function resetGuess() {
+            await fetch('/api/webapp/game/guess/reset', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id })
+            });
+            document.getElementById('guess-input').value = '';
+            document.getElementById('guess-feedback').innerHTML = '';
+        }
+
+        async function playRPS(move) {
+            const res = await fetch('/api/webapp/game/rps/play', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: tgUser.id, move: move })
+            });
+            const d = await res.json();
+            document.getElementById('rps-result').innerHTML = `
+                أنت اخترت: <strong>${d.user_move}</strong> | عمر اختار: <strong>${d.bot_move}</strong><br>
+                <span style="font-size:15px; color:${d.result === 'win' ? 'var(--neon-green)' : (d.result === 'loss' ? 'var(--neon-red)' : 'var(--neon-yellow)')};">${d.message}</span>
+            `;
+        }
+
+        async function sendResearchQuery() {
+            const q = document.getElementById('research-query').value.trim();
+            const st = document.getElementById('research-status');
+            if (!q) return;
+            st.innerHTML = 'جاري البحث في الأوراق والمراجع العلمية... ⏳';
+            const res = await fetch('/api/webapp/research/summarize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ topic: q })
+            });
+            const d = await res.json();
+            st.innerHTML = `<div style="background:rgba(0,0,0,0.3); padding:10px; border-radius:12px; margin-top:8px;">${d.summary.arabic_summary || 'تم فحص المراجع.'}</div>`;
+        }
+
+        // Init App
+        fetchState();
+        renderXO([0,0,0,0,0,0,0,0,0]);
+        initC4Grid();
+        loadTriviaQuestion();
+        setInterval(fetchState, 15000);
+        setInterval(updateLiveHeaderClock, 1000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,28 @@
+{
+  "8287744705": {
+    "/الكلمة": {
+      "command_trigger": "/الكلمة",
+      "response_template": "الرد الذي تريده",
+      "action_type": "TEXT",
+      "description": "",
+      "usage_count": 0,
+      "created_at": 1793552442.8891408
+    },
+    "/testcmd": {
+      "command_trigger": "/testcmd",
+      "response_template": "هذا رد تجريبي",
+      "action_type": "reply",
+      "description": "وصف",
+      "usage_count": 0,
+      "created_at": 1793554981.0599337
+    },
+    "/kingtest": {
+      "command_trigger": "/kingtest",
+      "response_template": "أهلاً يا ملكنا!",
+      "action_type": "TEXT",
+      "description": "أمر تجريبي للملك",
+      "usage_count": 0,
+      "created_at": 1793557224.2671719
+    }
+  }
+}

@@ -103,6 +103,94 @@ class DialectChameleonService:
             ),
             typical_fillers=["حياك الله يا خبير...", "يا هلا بالحبيب فديتك..."],
         ),
+        "syrian": DialectProfile(
+            code="syrian",
+            name_ar="اللهجة السورية الشامية (الدمشقية)",
+            edge_voice="ar-SY-LaithNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة السورية أو الشامية. "
+                "إلزامي: تحدث بلهجة دمشقية شامية دافئة ومهضومة جداً "
+                "(استخدم كلمات طبيعية: يا هلا والله، تكرم عينك، شو أخبارك، على راسي، منيح، كيفك، شو في ما في، ولا يهمك، حبيب قلبي، هلق، شبيبه)."
+            ),
+            typical_fillers=["يا هلا والله شو أخبارك...", "تكرم عينك يا غالي...", "أهلاً وسهلاً..."],
+        ),
+        "lebanese": DialectProfile(
+            code="lebanese",
+            name_ar="اللهجة اللبنانية",
+            edge_voice="ar-LB-RamiNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة اللبنانية. "
+                "إلزامي: جارِ لهجته الرقيقة والمهضومة "
+                "(استخدم: كيفك، شو عم تعمل، تكرم، ولو، حبيب قلبي، منيح، كتير، هيدا، تمام)."
+            ),
+            typical_fillers=["أهلاً كيفك شو الأخبار...", "تكرم عينك ولو..."],
+        ),
+        "jordanian_palestinian": DialectProfile(
+            code="jordanian_palestinian",
+            name_ar="اللهجة الأردنية والفلسطينية",
+            edge_voice="ar-JO-TaimNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة الأردنية أو الفلسطينية. "
+                "إلزامي: جارِ لهجته بنخوة وطيبة أصيلة "
+                "(استخدم: يا هلا بالنشمي، شو الأخبار، يسعد مساك، حياك الله، كيف حالك، منور يا طيب، ولا يهمك)."
+            ),
+            typical_fillers=["يا هلا بالنشمي شو الأخبار...", "يسعد مساك يا غالي..."],
+        ),
+        "kuwaiti_emirati": DialectProfile(
+            code="kuwaiti_emirati",
+            name_ar="اللهجة الكويتية والإماراتية والخليجية",
+            edge_voice="ar-AE-HamdanNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة الخليجية (كويتي/إماراتي). "
+                "إلزامي: تحدث بلهجة كويتية/إماراتية فخمة ومحبوبة "
+                "(استخدم: هلا وغلا، شخبارك، عساك بخير، طال عمرك، فديتك، يزاك الله خير، ما قصرت، زين)."
+            ),
+            typical_fillers=["هلا وغلا بالحبيب...", "عساك بخير وطيب..."],
+        ),
+        "moroccan": DialectProfile(
+            code="moroccan",
+            name_ar="اللهجة المغربية (الدارجة)",
+            edge_voice="ar-MA-JamalNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث بالدارجة المغربية. "
+                "إلزامي: جارِ لهجته بدارجة مغربية بيضاء مفهومة ولطيفة "
+                "(استخدم: لاباس عليك، كيدير، مزيان، واش كتعاود، بالصحة والراحة، خويا العزيز، تبارك الله عليك)."
+            ),
+            typical_fillers=["أهلاً خويا لاباس عليك...", "تبارك الله عليك..."],
+        ),
+        "algerian": DialectProfile(
+            code="algerian",
+            name_ar="اللهجة الجزائرية",
+            edge_voice="ar-MA-JamalNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة الجزائرية. "
+                "إلزامي: جارِ لهجته الجزائرية الأخوية المحبوبة "
+                "(استخدم: واش راك خويا، صحا، كاش جديد، لاباس، ربي يحفظك، يعطيك الصحة، مرحبا بيك)."
+            ),
+            typical_fillers=["واش راك خويا صحا...", "ربي يحفظك يا غالي..."],
+        ),
+        "tunisian": DialectProfile(
+            code="tunisian",
+            name_ar="اللهجة التونسية",
+            edge_voice="ar-MA-JamalNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة التونسية. "
+                "إلزامي: جارِ لهجته التونسية الخفيفة "
+                "(استخدم: شنحوالك، عيشك، باهي، يعطيك الصحة، شبيك، لاباس، مرحباً بيك)."
+            ),
+            typical_fillers=["شنحوالك لاباس...", "يعيشك يا باهي..."],
+        ),
+        "libyan": DialectProfile(
+            code="libyan",
+            name_ar="اللهجة الليبية",
+            edge_voice="ar-EG-ShakirNeural",
+            mirroring_instruction=(
+                "المستخدم يتحدث باللهجة الليبية. "
+                "إلزامي: جارِ لهجته بطيبة وشهامة ليبية "
+                "(استخدم: شن جوك، شن داير، باهي، مرحبتين، تمام يا غالي، سلمك، نهارك سعيد)."
+            ),
+            typical_fillers=["شن جوك يا غالي مرحبتين...", "أهلاً بيك شن داير..."],
+        ),
         "egyptian": DialectProfile(
             code="egyptian",
             name_ar="اللهجة المصرية",
@@ -127,11 +215,12 @@ class DialectChameleonService:
         ),
         "standard_arabic": DialectProfile(
             code="standard_arabic",
-            name_ar="اللغة العربية الفصحى الراقية",
+            name_ar="العربية الفصحى المعاصرة (الأساس التلقائي)",
             edge_voice="ar-SA-HamedNeural",
             mirroring_instruction=(
-                "المستخدم يتحدث بالعربية الفصحى أو بأسلوب رسمي. "
-                "رد عليه بلغة عربية فصحى مبسطة، أنيقة، ودودة، وسهلة الفهم دون تكلف أو تعقيد."
+                "المستخدم يتحدث باللغة العربية الفصحى أو بأسلوب عام. "
+                "إلزامي: تحدث معه بلغة عربية فصحى معاصرة، سلسة، محبوبة، وذكية دون أي تقعر أو تكلف أو ألفاظ عامية محلية. "
+                "تجنب الرد بالمصري أو بلهجة محلية ما لم يطلب المستخدم ذلك أو يستخدم كلمات لهجته صراحة."
             ),
             typical_fillers=["أهلاً وسهلاً بك...", "مرحباً يا طيب...", "بكل سرور..."],
         ),
@@ -189,7 +278,7 @@ class DialectChameleonService:
         """
         cleaned = text.strip().lower()
         if not cleaned:
-            return cls.DIALECTS.get(user_prior_dialect or "egyptian", cls.DIALECTS["egyptian"])
+            return cls.DIALECTS.get(user_prior_dialect or "standard_arabic", cls.DIALECTS["standard_arabic"])
 
         # 1. English check
         if re.search(cls.PATTERNS["english"][1], cleaned) or (
@@ -219,13 +308,8 @@ class DialectChameleonService:
         if user_prior_dialect and user_prior_dialect in cls.DIALECTS:
             return cls.DIALECTS[user_prior_dialect]
 
-        # Check for Modern Standard Arabic indicators
-        msa_words = ["مرحباً", "كيف حالك", "أهلاً بك", "شكراً جزيلاً", "هل يمكنك", "أود أن", "ما رأيك"]
-        if any(w in cleaned for w in msa_words):
-            return cls.DIALECTS["standard_arabic"]
-
-        # Default fallback: Egyptian / White Arabic
-        return cls.DIALECTS["egyptian"]
+        # Default fallback: Modern Standard Arabic (العربية الفصحى المعاصرة والسلسة)
+        return cls.DIALECTS["standard_arabic"]
 
 
 # Global instance

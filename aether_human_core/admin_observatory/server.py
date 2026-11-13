@@ -23,14 +23,44 @@ from aether_human_core.cognitive_engine.orchestrator import cognitive_orchestrat
 from aether_human_core.database.postgres.connection import db_manager
 from aether_human_core.database.postgres.repositories.user_repo import UserRepository
 from aether_human_core.database.postgres.repositories.behavioral_rule_repo import BehavioralRuleRepository
+from cloud_and_resource_guard.railway_health_governor import health_router
+from mini_app_webapp.backend_api.interactive_games_api import router as games_router
+from mini_app_webapp.webapp_server import webapp_router
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
 
 logger = logging.getLogger("Aether.Observatory")
 
 app = FastAPI(
     title="Aether-Human Admin Observatory",
     description="Real-Time Cognitive Telemetry & Sentient Brain Introspection",
-    version="1.0.0",
+    version="2.0.0",
 )
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def add_telegram_webapp_headers(request: Request, call_next):
+    response = await call_next(request)
+    if "x-frame-options" in response.headers:
+        del response.headers["x-frame-options"]
+    response.headers["Content-Security-Policy"] = (
+        "frame-ancestors * https://web.telegram.org https://*.telegram.org https://telegram.org;"
+    )
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
+
+
+app.include_router(health_router)
+app.include_router(games_router)
+app.include_router(webapp_router)
 
 
 class ActiveWebsocketManager:
@@ -113,6 +143,27 @@ async def get_system_telemetry() -> Dict[str, Any]:
         "active_social_constraints": rules_data,
         "affinity_matrix": users_data,
     }
+
+
+@app.get("/api/system/logs")
+async def get_system_logs(lines: int = 100) -> Dict[str, Any]:
+    """
+    Returns the latest operational logs from the server log file.
+    """
+    import os
+    log_file = "logs/aether_system.log"
+    if not os.path.exists(log_file):
+        return {"logs": [], "message": "Log file not yet initialized."}
+    try:
+        with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
+            all_lines = f.readlines()
+            return {
+                "total_lines": len(all_lines),
+                "returned_lines": min(len(all_lines), lines),
+                "logs": [l.strip() for l in all_lines[-lines:]]
+            }
+    except Exception as exc:
+        return {"error": str(exc), "logs": []}
 
 
 @app.post("/api/chat/simulate")
@@ -355,7 +406,7 @@ async def serve_observatory_dashboard() -> str:
     <div class="card">
       <div class="card-title">⏰ الساعة البيولوجية وحياة عمر</div>
       <div class="metric-row">
-        <span>توقيت القاهرة الحالي:</span>
+        <span>توقيت دمشق الحالي (سوريا UTC+3):</span>
         <span id="cairo-time">--:--:--</span>
       </div>
       <div class="metric-row">

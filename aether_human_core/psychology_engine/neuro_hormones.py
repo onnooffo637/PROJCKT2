@@ -153,6 +153,25 @@ class NeuroEndocrineEngine:
         self.state.last_updated = time.time()
         logger.info(f"Direct endocrine event [{event_name}] applied successfully.")
 
+    def apply_custom_delta(
+        self,
+        dopamine_delta: float = 0.0,
+        oxytocin_delta: float = 0.0,
+        cortisol_delta: float = 0.0,
+        serotonin_delta: float = 0.0,
+        energy_delta: float = 0.0,
+        event_name: str = "CUSTOM_DELTA",
+    ) -> None:
+        """Convenience alias for direct endocrine modulation."""
+        self.update_state_from_event(
+            event_name=event_name,
+            dopamine_delta=dopamine_delta,
+            oxytocin_delta=oxytocin_delta,
+            cortisol_delta=cortisol_delta,
+            serotonin_delta=serotonin_delta,
+            energy_delta=energy_delta,
+        )
+
     def evaluate_psychological_mood(self) -> Dict[str, Any]:
         """
         Synthesizes current hormone configuration into a high-level psychological description.

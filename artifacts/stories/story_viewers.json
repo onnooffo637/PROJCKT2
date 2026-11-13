@@ -1,0 +1,42 @@
+{
+  "1_6298778970": {
+    "story_id": 1,
+    "user_id": 6298778970,
+    "name": "Мухаммед",
+    "username": "wk_x7",
+    "has_reaction": false,
+    "reaction": null,
+    "first_seen": 1793896104.7293692,
+    "last_updated": 1794008503.852405
+  },
+  "1_8287744705": {
+    "story_id": 1,
+    "user_id": 8287744705,
+    "name": "ECENN",
+    "username": "n0accent",
+    "has_reaction": true,
+    "reaction": "❤",
+    "first_seen": 1793896104.867517,
+    "last_updated": 1794252823.1316626
+  },
+  "1_8896801872": {
+    "story_id": 1,
+    "user_id": 8896801872,
+    "name": "メ꧁V7X꧂メ",
+    "username": "",
+    "has_reaction": true,
+    "reaction": "❤",
+    "first_seen": 1793902612.9209788,
+    "last_updated": 1794252823.1316626
+  },
+  "1_5175440874": {
+    "story_id": 1,
+    "user_id": 5175440874,
+    "name": "Zero Progress",
+    "username": "Zerostackio",
+    "has_reaction": false,
+    "reaction": null,
+    "first_seen": 1793919971.374891,
+    "last_updated": 1794008503.852405
+  }
+}

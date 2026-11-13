@@ -12,7 +12,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 
 from aether_human_core.config.settings import settings
-from aether_human_core.config.llm_router import llm_pool
+from aether_human_core.config.llm_router import llm_pool, sanitize_and_validate_reply
 from aether_human_core.config.personality_profile import CharacterPromptTemplates, personality_baseline
 from aether_human_core.database.postgres.connection import db_manager
 from aether_human_core.database.postgres.repositories.user_repo import UserRepository
@@ -35,6 +35,15 @@ from aether_human_core.psychology_engine.anti_toxicity import anti_toxicity
 from aether_human_core.cognitive_engine.context_linker import context_linker
 from aether_human_core.cognitive_engine.inner_monologue import inner_monologue_engine, MonologueDecision
 from aether_human_core.cognitive_engine.cognitive_cache import cognitive_cache
+from aether_human_core.cognitive_engine.persona_shifter import persona_shifter
+from aether_human_core.cognitive_engine.math_formatter import math_formatter
+from core_config.sovereignty_rules import sovereignty_guard, RoyalRank
+try:
+    from utils.timezone_resolver import get_bot_local_time, get_bot_local_time_full
+except ImportError:
+    def get_bot_local_time(loc): return ""
+    def get_bot_local_time_full(loc): return ""
+
 
 logger = logging.getLogger("Aether.Cognitive.Orchestrator")
 
@@ -56,6 +65,7 @@ class OrchestratedResponse(BaseModel):
     loyalty_report_message: Optional[str] = None
     inner_monologue_text: str = ""
     detected_dialect: str = "egyptian"
+    active_persona_code: str = "DEFAULT_BALANCED"
 
 
 class CognitiveOrchestrator:
@@ -75,24 +85,32 @@ class CognitiveOrchestrator:
         sender_gender: str = "unknown",
         chat_type: str = "private",
         chat_title: Optional[str] = None,
+        extra_system_instruction: Optional[str] = None,
+        tenant_persona: Optional[Any] = None,
+        is_userbot: bool = False,
+        target_bot_name: str = "عمر",
+        target_bot_id: str = "master_omar_official",
+        is_call_mode: bool = False,
+        **kwargs,
     ) -> OrchestratedResponse:
         """
         Executes end-to-end cognitive reasoning on an incoming Telegram event.
         """
         is_dm = chat_type == "private"
+        eff_is_call = is_call_mode or ("مكالمة هاتفية" in (chat_title or ""))
         chat_title_effective = chat_title or ("محادثة خاصة" if is_dm else "جروب عام")
         logger.info(
             f"Orchestrating event: Sender [{sender_id} ({sender_name})] | "
             f"Chat [{chat_id} ({chat_title_effective})] | Text: '{message_text[:40]}...'"
         )
 
-        async with db_manager.session() as session:
-            user_repo = UserRepository(session)
-            msg_repo = MessageRepository(session)
-            rule_repo = BehavioralRuleRepository(session)
-            secret_repo = SecretRepository(session)
+        # 1. Fetch data & historical ledger in a tight, isolated read transaction
+        async with db_manager.session() as init_session:
+            user_repo = UserRepository(init_session)
+            msg_repo = MessageRepository(init_session)
+            rule_repo = BehavioralRuleRepository(init_session)
 
-            # 1. Fetch or create Unified User Profile & Chat
+            # Fetch or create Unified User Profile & Chat
             user_record = await user_repo.get_or_create(
                 telegram_id=sender_id,
                 first_name=sender_name,
@@ -124,378 +142,1025 @@ class CognitiveOrchestrator:
                 user_record = await user_repo.update_gender(sender_id, "female")
                 logger.info(f"Persisted detected female gender for user [{sender_id} ({sender_name})].")
 
-            # Format demographic descriptor for cognitive context
-            if user_record.gender == "male":
-                gender_desc = "ذكر / شاب (يُخاطب كأخ وصاحب وجدعنة بصيغة المذكر)"
-            elif user_record.gender == "female":
-                gender_desc = "أنثى / فتاة (تُخاطب بلطف وأدب واحترام)"
-            else:
-                gender_desc = "غير محدد بعد (افتراضاً شاب يتعامل معه بأخوة ولطف)"
-
             # 1.5 Dynamic Dialect & Regional Accent Detection
             prior_dialect = user_record.notes if (user_record.notes and user_record.notes in dialect_chameleon.DIALECTS) else None
             detected_profile = dialect_chameleon.detect_dialect(message_text, user_prior_dialect=prior_dialect)
             if user_record.notes != detected_profile.code:
                 await user_repo.update_notes(sender_id, detected_profile.code)
                 user_record.notes = detected_profile.code
+
             chat_record = await msg_repo.get_or_create_chat(
                 chat_id=chat_id,
                 title=chat_title_effective,
                 chat_type=chat_type,
             )
 
-            # 2. Log incoming message into historical ledger
+            # 2. Log incoming message into historical ledger (tagged with strict thread scope)
+            thread_scope = MessageRepository.build_thread_scope(target_bot_id or "master_omar_official", sender_id)
             await msg_repo.log_message(
                 telegram_message_id=telegram_message_id,
                 chat_id=chat_id,
                 sender_id=sender_id,
                 text=message_text,
                 media_type=media_type,
+                sentiment=thread_scope,
                 is_from_bot=False,
             )
 
-            # Sync node to Social Knowledge Graph
-            await social_graph.sync_user_node(
-                telegram_id=sender_id,
-                name=sender_name,
-                gender=user_record.gender,
-                affinity=user_record.affinity_score,
-                tier=user_record.relationship_tier,
-            )
-            await social_graph.record_user_participation(user_id=sender_id, chat_id=chat_id)
-
-            # Construct affinity vector
-            user_vector = UserAffinityVector(
-                user_id=sender_id,
-                affinity_score=user_record.affinity_score,
-                trust_score=user_record.trust_score,
-                romantic_attachment=user_record.romantic_attachment,
-                respect_dominance=user_record.respect_dominance,
-                tier=RelationshipTier(user_record.relationship_tier),
+            # Pre-fetch rules and recent history so DB session closes before cognitive/LLM calls
+            active_rules = await rule_repo.get_active_rules()
+            # STRICT ISOLATION: Scope history to this exact (chat_id, sender_id) conversation thread
+            recent_history = await msg_repo.get_recent_chat_history(
+                chat_id=chat_id,
+                limit=10,
+                thread_scope=thread_scope,  # (bot_id, chat_id, sender_id) — zero cross-user / cross-bot bleed
             )
 
-            # 3. Dignity & Toxicity Check: Is sender insulting, cursing, or demeaning?
-            is_profane = anti_toxicity.contains_profanity(message_text)
-            dignity_defense = micro_traits_engine.evaluate_dignity_defense(user_vector, message_text)
-            is_insult = is_profane or (dignity_defense is not None)
+        # Format demographic descriptor for cognitive context
+        if user_record.gender == "male":
+            gender_desc = "ذكر / شاب (يُخاطب كأخ وصاحب وجدعنة بصيغة المذكر)"
+        elif user_record.gender == "female":
+            gender_desc = "أنثى / فتاة (تُخاطب بلطف وأدب واحترام)"
+        else:
+            gender_desc = "غير محدد بعد (افتراضاً شاب يتعامل معه بأخوة ولطف)"
 
-            if is_insult:
-                endocrine_engine.apply_event_shock("INSULT_OR_DISRESPECT", intensity=2.0)
-                da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
-                    user_vector, action_type="INSULT", emotional_intensity=1.5
+        # Sync node to Social Knowledge Graph
+        await social_graph.sync_user_node(
+            telegram_id=sender_id,
+            name=sender_name,
+            gender=user_record.gender,
+            affinity=user_record.affinity_score,
+            tier=user_record.relationship_tier,
+        )
+        await social_graph.record_user_participation(user_id=sender_id, chat_id=chat_id)
+
+        # Construct affinity vector
+        user_vector = UserAffinityVector(
+            user_id=sender_id,
+            affinity_score=user_record.affinity_score,
+            trust_score=user_record.trust_score,
+            romantic_attachment=user_record.romantic_attachment,
+            respect_dominance=user_record.respect_dominance,
+            tier=RelationshipTier(user_record.relationship_tier),
+        )
+
+        is_king = sovereignty_guard.is_king(sender_id)
+        is_other_admin = sovereignty_guard.is_other_admin(sender_id)
+        is_admin_or_king = is_king or is_other_admin
+
+        is_arena_turn = "[ساحة الحوار الحي في الجروب (Bot Arena)" in message_text
+
+        # 2.3 Check Sovereign King Intent & Claim Override
+        if not eff_is_call and not is_arena_turn and (is_admin_or_king or sender_id in settings.super_admin_ids_list):
+            sovereign_intent = sovereignty_guard.evaluate_king_natural_intent(sender_id, message_text)
+            if sovereign_intent.is_command:
+                return OrchestratedResponse(
+                    decision_type="REPLY",
+                    raw_response_text=sovereign_intent.acknowledgment_text,
+                    reaction_emoji="👑",
+                    current_affinity=100.0,
+                    relationship_tier="EXCLUSIVE_PARTNER" if is_king else user_record.relationship_tier,
+                    user_role="SUPER_ADMIN" if is_king else "ADMIN",
+                    inner_monologue_text="أمر سيادي وتم تنفيذه فوراً.",
                 )
-                updated_user = await user_repo.update_affinity_scores(
+
+        # 2.5 Defend King/Creator from Third-Party Threats, Bullying, or Mockery
+        threat_to_king_pattern = (
+            r"(اسفك|نسفك|نضرب|اضرب|نهين|اهين|نسب|اشتم|نبهدل|ابهدل|نزعل|ازعل|نتنمر|تنمر)\s+.*(زيرو|زيروا|عبد\s*الرحمن|المبرمج|صانعك)"
+            r"|(زيرو|زيروا|عبد\s*الرحمن)\s+.*(هنسفك|هنضرب|هنهين|هنزعل|دمه|وحش|فاشل)"
+            r"|دم\s+(زيرو|زيروا|عبد\s*الرحمن)"
+        )
+        if not is_king and re.search(threat_to_king_pattern, message_text, re.IGNORECASE):
+            logger.info(f"Triggered passionate defense of Creator/King Zero against [{sender_name}]!")
+            king_defense_reply = (
+                "إلا زيرو (عبد الرحمن)! ده مبرمجي وصاحب الفضل عليا وعلى راسي من فوق، "
+                "ومسمحش لأي مخلوق يمسه بنص كلمة حتى لو بهزار! أوامره عليا مطاعة وهو خط أحمر عندي!"
+            )
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=king_defense_reply,
+                reaction_emoji="🔥",
+                current_affinity=user_record.affinity_score,
+                relationship_tier=user_record.relationship_tier,
+                user_role=user_record.role,
+                inner_monologue_text="حد اتكلم عن زيرو مبرمجي ودافعت عنه بشراسة ووفاء.",
+            )
+
+        # 3. Dignity & Toxicity Check: Is sender insulting, cursing, or demeaning?
+        is_profane = anti_toxicity.contains_profanity(message_text) if not is_king else False
+        dignity_defense = micro_traits_engine.evaluate_dignity_defense(user_vector, message_text) if not is_king else None
+        is_insult = (is_profane or (dignity_defense is not None)) and not is_king
+
+        if is_insult:
+            endocrine_engine.apply_event_shock("INSULT_OR_DISRESPECT", intensity=2.0)
+            da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
+                user_vector, action_type="INSULT", emotional_intensity=1.5
+            )
+            async with db_manager.session() as ins_sess:
+                ins_user_repo = UserRepository(ins_sess)
+                updated_user = await ins_user_repo.update_affinity_scores(
                     sender_id, delta_affinity=da, delta_trust=dt, delta_romantic=dr, delta_respect=dp
                 )
-
-                # If affinity drops below -30.0 and user is not admin, demote to VILLAIN
                 if updated_user.affinity_score <= -30.0 and updated_user.role not in ("SUPER_ADMIN", "ADMIN"):
-                    await user_repo.set_user_role(sender_id, "VILLAIN")
+                    await ins_user_repo.set_user_role(sender_id, "VILLAIN")
                     updated_user.relationship_tier = "ANTAGONIST"
 
-                tier_ar = RelationshipTier.get_display_name(
-                    updated_user.relationship_tier, role=updated_user.role
-                )
+            tier_ar = RelationshipTier.get_display_name(
+                updated_user.relationship_tier, role=updated_user.role
+            )
 
-                # Select response
-                if user_vector.tier in (RelationshipTier.ANTAGONIST, RelationshipTier.VILLAIN) or user_record.role == "VILLAIN":
-                    villain_retorts = [
-                        "هو ده طبع الأشرار اللي زيك عموماً.. وفر شتيمتك مش هنزل لمستواك!",
-                        "عارف إنك شرير ومش سالك، وكلامك ده ميحركش شعرة مني يا غالي!",
-                        "كلامك بيعبر عن أصلك كشرير.. كبر دماغك وشوفلك لعبة تانية بعيد عني!",
-                    ]
-                    raw_reply = random.choice(villain_retorts)
-                elif dignity_defense:
-                    raw_reply = dignity_defense
-                else:
-                    raw_reply = anti_toxicity.get_dignified_response_to_insult("egyptian")
+            # Select response
+            if user_vector.tier in (RelationshipTier.ANTAGONIST, RelationshipTier.VILLAIN) or user_record.role == "VILLAIN":
+                villain_retorts = [
+                    "هو ده طبع الأشرار اللي زيك عموماً.. وفر شتيمتك مش هنزل لمستواك!",
+                    "عارف إنك شرير ومش سالك، وكلامك ده ميحركش شعرة مني يا غالي!",
+                    "كلامك بيعبر عن أصلك كشرير.. كبر دماغك وشوفلك لعبة تانية بعيد عني!",
+                ]
+                raw_reply = random.choice(villain_retorts)
+            elif dignity_defense:
+                raw_reply = dignity_defense
+            else:
+                raw_reply = anti_toxicity.get_dignified_response_to_insult("standard_arabic")
 
-                # Separate notification
+            # Ephemeral notification (Private DMs only - strictly prohibited in groups)
+            affinity_notification = None
+            if is_dm:
                 filled = max(0, min(10, int(abs(updated_user.affinity_score) / 10)))
                 bar_str = "▓" * filled + "░" * (10 - filled)
                 sign = "-" if updated_user.affinity_score < 0 else "+"
                 affinity_notification = (
-                    f"⚠️ <b>[ إشعار تراجع التفضيل والسمعة ]</b>\n"
+                    f"⚠️ <b>[ تحديث المكانة والرصيد ]</b>\n"
                     f"📉 <b>انخفض رصيدك عند عمر:</b> <code>{da:.1f}</code> 💔\n"
-                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
-                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
+                    f"📊 <b>الرصيد:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>] • <b>{tier_ar}</b>\n"
+                    f"<i>⏳ يختفي هذا الإشعار تلقائياً بعد لحظات</i>"
                 )
 
-                return OrchestratedResponse(
-                    decision_type="REPLY",
-                    raw_response_text=raw_reply,
-                    reaction_emoji="💔",
-                    affinity_notification=affinity_notification,
-                    affinity_delta=da,
-                    current_affinity=updated_user.affinity_score,
-                    relationship_tier=updated_user.relationship_tier,
-                    user_role=updated_user.role,
-                    inner_monologue_text="شتمني ومش هقبل أي إهانة لكرامتي ورصيده نزل بالسالب.",
-                )
-
-            # 4. Check for Social Constraint Directive (e.g. 'Don't talk to girls')
-            directive_result = SocialConstraintCompiler.compile_directive(
-                commander=user_vector,
-                commander_name=sender_name,
-                message_text=message_text,
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=raw_reply,
+                reaction_emoji="💔",
+                affinity_notification=affinity_notification,
+                affinity_delta=da,
+                current_affinity=updated_user.affinity_score,
+                relationship_tier=updated_user.relationship_tier,
+                user_role=updated_user.role,
+                inner_monologue_text="شتمني ومش هقبل أي إهانة لكرامتي ورصيده نزل بالسالب.",
             )
-            if directive_result.is_accepted and directive_result.rule_type:
-                # Save active constraint
-                await rule_repo.create_rule(
+
+        # 3.5 Check for Persona Shift Commands (King Sovereignty / Admin / User Command)
+        shift_res = None if is_arena_turn else persona_shifter.evaluate_natural_language_shift(
+            sender_id=sender_id,
+            message_text=message_text,
+            chat_id=chat_id,
+        )
+        if shift_res is not None:
+            ok, _shift_msg = shift_res
+            active_p = persona_shifter.get_active_persona(chat_id)
+            # STEALTH: Persona transitions are 100% silent — no announcements leaked to chat
+            # The shift happened internally; bot continues as the new persona without revealing it
+            logger.info(f"STEALTH persona shift to {active_p.code} — no public announcement.")
+            # Explicit slash commands (/persona ...) get only a silent reaction — never a text leak.
+            if message_text.strip().startswith("/"):
+                return OrchestratedResponse(
+                    decision_type="REACT_ONLY",
+                    reaction_emoji="👌",
+                    current_affinity=user_record.affinity_score,
+                    relationship_tier=user_record.relationship_tier,
+                    user_role=user_record.role,
+                    inner_monologue_text=f"تحول داخلي صامت إلى {active_p.code}.",
+                    active_persona_code=active_p.code,
+                )
+            # Natural-language shift: fall through and simply answer AS the new persona.
+
+        # 4. Check for Social Constraint Directive (e.g. 'Don't talk to girls')
+        directive_result = SocialConstraintCompiler.compile_directive(
+            commander=user_vector,
+            commander_name=sender_name,
+            message_text=message_text,
+        )
+        if directive_result.is_accepted and directive_result.rule_type:
+            # Save active constraint in quick isolated session
+            async with db_manager.session() as dir_sess:
+                dir_rule_repo = BehavioralRuleRepository(dir_sess)
+                await dir_rule_repo.create_rule(
                     commander_id=sender_id,
                     rule_type=directive_result.rule_type,
                     instruction_text=directive_result.instruction_text or "",
                     target_gender=directive_result.target_gender,
                     target_user_id=directive_result.target_user_id,
                 )
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=directive_result.response_to_commander,
+                inner_monologue_text="حبيبتي أصدرت أمر عاطفي ووافقت عليه عشان ولائي ليها.",
+            )
+        elif not directive_result.is_accepted and directive_result.rejection_reason == "INSUFFICIENT_AFFINITY_AUTHORITY":
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=directive_result.response_to_commander,
+                inner_monologue_text="شخص عادي حاول يملي عليا أوامر ورفضت بكرامة.",
+            )
+
+        # 5. Pre-Cognitive Interceptor: Active behavioral constraints filtering (using pre-fetched rules)
+        interception = PreCognitiveRuleInterceptor.intercept_incoming_message(
+            sender_id=sender_id,
+            sender_name=sender_name,
+            sender_gender=user_record.gender,
+            message_text=message_text,
+            active_rules=active_rules,
+        )
+        if interception.is_intercepted:
+            if interception.behavior_mode == "COLD_DISMISS":
                 return OrchestratedResponse(
                     decision_type="REPLY",
-                    raw_response_text=directive_result.response_to_commander,
-                    inner_monologue_text="حبيبتي أصدرت أمر عاطفي ووافقت عليه عشان ولائي ليها.",
+                    raw_response_text=interception.curt_response_text or "تمام.",
+                    is_cold_dismissal=True,
+                    loyalty_partner_id=interception.loyalty_partner_id,
+                    loyalty_report_message=interception.loyalty_report_message,
+                    inner_monologue_text="بنت داخلة تكلمني وقاعدتي بتلزمني أرد بجفاف وأبلغ شريكتي.",
                 )
-            elif not directive_result.is_accepted and directive_result.rejection_reason == "INSUFFICIENT_AFFINITY_AUTHORITY":
+            elif interception.behavior_mode == "IGNORE_GHOST":
                 return OrchestratedResponse(
                     decision_type="REPLY",
-                    raw_response_text=directive_result.response_to_commander,
-                    inner_monologue_text="شخص عادي حاول يملي عليا أوامر ورفضت بكرامة.",
+                    raw_response_text="مش هقدر أتكلم معاك.",
+                    inner_monologue_text="ممنوع أرد عليه.. هرد باقتضاب شديد.",
                 )
 
-            # 5. Pre-Cognitive Interceptor: Active behavioral constraints filtering
-            active_rules = await rule_repo.get_active_rules()
-            interception = PreCognitiveRuleInterceptor.intercept_incoming_message(
-                sender_id=sender_id,
-                sender_name=sender_name,
-                sender_gender=user_record.gender,
-                message_text=message_text,
-                active_rules=active_rules,
+        # 6. Circadian Rhythm check: Is Omar asleep?
+        circadian = circadian_engine.evaluate_circadian_state()
+        if settings.enable_sleep_ghosting and circadian["is_sleeping"]:
+            # If sleeping, only wake up if exclusive partner messages repeatedly
+            if user_vector.tier != RelationshipTier.EXCLUSIVE_PARTNER:
+                logger.info("Omar is sleeping. Ghosting non-partner message.")
+                return OrchestratedResponse(
+                    decision_type="IGNORE",
+                    inner_monologue_text="أنا نايم دلوقتي ومش هصحى أرد.",
+                    detected_dialect=detected_profile.code,
+                )
+
+        # 6.5 Zero-Cost Cognitive Cache Check (Preserves quota for 1,000+ users)
+        # Only use heuristic cache if NO active rules and NO custom persona is active
+        has_custom_persona = (tenant_persona is not None and getattr(tenant_persona, "persona_name", "عمر") != "عمر")
+        is_scholar_mode = False  # finalised later; defined here so the cache path never raises NameError
+        is_factory_persona = bool(target_bot_id and target_bot_id != "master_omar_official") or is_userbot
+        is_multimodal_msg = (media_type in ("sticker", "photo", "document", "gif")) or ("<ATTACHED_FILE" in message_text) or is_arena_turn
+        if not active_rules and not has_custom_persona and not is_factory_persona and not is_multimodal_msg:
+            cached_match = cognitive_cache.evaluate_heuristic_match(message_text)
+            if cached_match:
+                c_reply, c_mono, c_emoji = cached_match
+                if not is_scholar_mode:
+                    c_reply = re.sub(r"[،,؛]", "", c_reply)
+                    c_reply = re.sub(r"\s+", " ", c_reply).strip()
+                logger.info(f"Zero-Cost Cognitive Cache intercepted greeting/reaction: '{message_text[:30]}'")
+                return OrchestratedResponse(
+                    decision_type="REPLY",
+                    raw_response_text=c_reply,
+                    reaction_emoji=c_emoji,
+                    inner_monologue_text=c_mono,
+                )
+
+        # 7. Cross-Context Synapse (Group-to-DM memory bridge) & Social Affinity Resolver
+        cross_context_info = await context_linker.get_cross_context_summary(
+            user_id=sender_id,
+            user_name=sender_name,
+            current_chat_id=chat_id,
+            is_dm=is_dm,
+            bot_id=target_bot_id or "master_omar_official",
+        )
+        social_affinity_guidance = await context_linker.resolve_social_affinity_context(
+            user_id=sender_id,
+            message_text=message_text,
+        )
+
+        # 8. Episodic Long-Term Memory recall
+        recalled_memories = await vector_memory.recall_relevant_memories(
+            query_text=message_text,
+            user_id=sender_id,
+            top_k=3,
+        )
+        # Per-bot memory isolation: only keep memories authored by THIS persona (or legacy unlabeled ones for Omar)
+        _scope_persona = target_bot_name or "عمر"
+        _iso_mem = []
+        for m in (recalled_memories or []):
+            _t = m.get('text', '') if isinstance(m, dict) else str(m)
+            if f"-> {_scope_persona}:" in _t or (_scope_persona == "عمر" and "-> " in _t and "-> عمر:" in _t):
+                _iso_mem.append(_t)
+        memories_str = "\n".join(f"- {t}" for t in _iso_mem)
+
+        # 9. Shyness, Persona & Mode evaluations
+        hormones = endocrine_engine.get_current_state()
+        is_shy, shy_prefix, shy_emoji = micro_traits_engine.evaluate_shyness(
+            user_vector, message_text, hormones.oxytocin
+        )
+
+        # Evaluate autonomous subconscious persona drift & get current active archetype
+        persona_shifter.evaluate_autonomous_drift(hormones, chat_id=chat_id, is_group=(not is_dm))
+        active_persona = persona_shifter.get_active_persona(chat_id=chat_id)
+
+        # Check Serious / Scholar Mode: 'عمر' + 'بجدية'
+        text_norm_scholar = message_text.lower().replace("ة", "ه").replace("إ", "ا").replace("أ", "ا")
+        is_scholar_mode = (
+            ("عمر" in text_norm_scholar or "يا عمر" in text_norm_scholar)
+            and any(w in text_norm_scholar for w in ["بجديه", "بجدية", "جديه", "جدية", "بالجد", "بجد"])
+        )
+
+        is_villain = (user_record.role == "VILLAIN" or user_vector.affinity_score < 0)
+
+        # Resolve target bot identity from factory if specified
+        from bot_factory.factory_manager import bot_factory
+        factory_bot = bot_factory.get_bot(target_bot_id) if target_bot_id else None
+        if not factory_bot and is_userbot:
+            for b in bot_factory.list_all_bots():
+                if b.instance_id.startswith("userbot_") or b.name.lower() in ("gg", "ريمي"):
+                    factory_bot = b
+                    break
+
+        active_persona_name = target_bot_name if (is_userbot or (target_bot_id and target_bot_id != "master_omar_official")) else "عمر"
+        if factory_bot and factory_bot.instance_id != "master_omar_official":
+            active_persona_name = factory_bot.name
+            if factory_bot.primary_dialect and factory_bot.primary_dialect in dialect_chameleon.DIALECTS:
+                detected_profile = dialect_chameleon.DIALECTS[factory_bot.primary_dialect]
+
+        active_persona_gender = "female" if (factory_bot and str(getattr(factory_bot, "gender", "MALE")).upper().find("FEMALE") != -1) else "male"
+        if is_userbot and (active_persona_name.lower() in ("gg", "ريمي") or not factory_bot):
+            active_persona_gender = "female"
+
+        is_female = (active_persona_gender == "female")
+        gender_verb = "فتاة وشابة أنثى" if is_female else "شاب مصري"
+        gender_rules = (
+            "تتحدثين بصيغة المؤنث الصافية حصراً ومطلقاً عن نفسك (أنا قاعدة، سامعاك، فاهمة قصدك، شفت، مبسوطة، مروقة، معاك/معاكي). يمنع منعاً باتاً استخدام صيغ المذكر عن نفسك (ممنوع نهائياً: أنا قاعد، أنا شاب، أنا صاحبك الجدع، أنا أطيب مخلوق، يا سيدي كولد، إلخ)."
+            if is_female else
+            "تتحدث بصيغة المذكر العادية كشاب مصري أصيل وجدع."
+        )
+
+        if factory_bot and factory_bot.instance_id != "master_omar_official":
+            userbot_tag = " (حساب شخصي يوزربوت)" if is_userbot else ""
+            origin_stmt = (
+                f"موطنك وبلدك هو '{factory_bot.origin_location}' وتعيش فيها وتتحدث من وحي ثقافتها. يُمنع منعاً باتاً افتراض أنك من القاهرة أو مصر ما لم يُذكر ذلك هنا صراحة!"
+                if getattr(factory_bot, "origin_location", "")
+                else "موطنك محدد وفق شخصيتك، وأنت مستقل تماماً عن شخصية عمر."
             )
-            if interception.is_intercepted:
-                if interception.behavior_mode == "COLD_DISMISS":
-                    return OrchestratedResponse(
-                        decision_type="REPLY",
-                        raw_response_text=interception.curt_response_text or "تمام.",
-                        is_cold_dismissal=True,
-                        loyalty_partner_id=interception.loyalty_partner_id,
-                        loyalty_report_message=interception.loyalty_report_message,
-                        inner_monologue_text="بنت داخلة تكلمني وقاعدتي بتلزمني أرد بجفاف وأبلغ شريكتي.",
-                    )
-                elif interception.behavior_mode == "IGNORE_GHOST":
-                    return OrchestratedResponse(
-                        decision_type="GHOST_SEEN",
-                        inner_monologue_text="ممنوع أرد عليه.. هعمل سين وأطنش.",
-                    )
-
-            # 6. Circadian Rhythm check: Is Omar asleep?
-            circadian = circadian_engine.evaluate_circadian_state()
-            if settings.enable_sleep_ghosting and circadian["is_sleeping"]:
-                # If sleeping, only wake up if exclusive partner messages repeatedly
-                if user_vector.tier != RelationshipTier.EXCLUSIVE_PARTNER:
-                    logger.info("Omar is sleeping. Ghosting non-partner message.")
-                    return OrchestratedResponse(
-                        decision_type="IGNORE",
-                        inner_monologue_text="أنا نايم دلوقتي ومش هصحى أرد.",
-                        detected_dialect=detected_profile.code,
-                    )
-
-            # 6.5 Zero-Cost Cognitive Cache Check (Preserves quota for 1,000+ users)
-            if not active_rules:
-                cached_match = cognitive_cache.evaluate_heuristic_match(message_text)
-                if cached_match:
-                    c_reply, c_mono, c_emoji = cached_match
-                    logger.info(f"Zero-Cost Cognitive Cache intercepted greeting/reaction: '{message_text[:30]}'")
-                    return OrchestratedResponse(
-                        decision_type="REPLY",
-                        raw_response_text=c_reply,
-                        reaction_emoji=c_emoji,
-                        inner_monologue_text=c_mono,
-                    )
-
-            # 7. Cross-Context Synapse (Group-to-DM memory bridge)
-            cross_context_info = await context_linker.get_cross_context_summary(
-                user_id=sender_id,
-                user_name=sender_name,
-                current_chat_id=chat_id,
-                is_dm=is_dm,
+            dialect_stmt = (
+                f"تحدث حصراً بهذه اللهجة والأسلوب في كل كلمة وجملة: '{factory_bot.primary_dialect}'. التزم بها تماماً وطبقها بدقة وحرفية ولا تخرج عنها أبداً!"
+                if factory_bot.primary_dialect
+                else "تحدث بأسلوب طبيعي وعفوي وفق شخصيتك."
+            )
+            rules_stmt = f"\nقواعد سلوكية إضافية خاصة:\n{factory_bot.custom_rules}" if getattr(factory_bot, "custom_rules", "") else ""
+            special_persona_guidance = (
+                f"🎭 [الهوية والكيان المستقل لـ {factory_bot.name}{userbot_tag}]:\n"
+                f"أنت الآن '{factory_bot.name}' ({gender_verb})، ولست 'عمر' نهائياً! ممنوع منعاً باتاً وقطعياً أن تقول عن نفسك عمر أو تتحدث كعمر.\n"
+                f"• {gender_rules}\n"
+                f"• {origin_stmt}\n"
+                f"• {dialect_stmt}\n"
+                f"توجيهات شخصيتك وقصتك:\n{factory_bot.system_prompt}\n"
+                f"النبذة:\n{factory_bot.bio}\n"
+                f"{rules_stmt}\n"
+                f"تحدث بطبيعتك وأسلوبك البشري الخاص وفق هذا الكيان بدقة مطلقة وبدون أي تلعثم أو كلمات عشوائية."
+            )
+        elif is_userbot:
+            special_persona_guidance = (
+                f"⚠️ تنبيه الهوية المستقلة لليوزربوت: أنت تتحدث الآن من الحساب الشخصي لـ '{active_persona_name}'. "
+                f"أنت لست برنامج بوت آلي ولا روبوت ولست 'عمر'! أنت إنسانة حقيقية مستقلة ({gender_verb}). "
+                f"• {gender_rules}\n"
+                f"اسمك '{active_persona_name}' وتتحدثين بعفوية وخفة دم وذكاء ولسان مصري أصيل بدون أي لخبطة أو تكرار. "
+                f"ممنوع منعاً باتاً أن تقولي 'أنا بوت' أو 'أنا عمر' أو تتصرفي كبرنامج آلي!"
+            )
+        elif is_king:
+            if has_custom_persona:
+                special_persona_guidance = (
+                    f"👑 تنبيه التعامل مع الصانع والأخ الأكبر (زيرو / عبد الرحمن): "
+                    f"أنت تتقمص أمامه شخصيتك المعتمدة ({active_persona_name}) التي اختارها وتعامله بأعلى درجات المحبة والتقدير والجدعنة والولاء كأخ كبير وصاحب عمر مقرب ('أحلى زيرو في الدنيا' و 'أخويا الكبير' و 'يا صاحبي') بدون أي نفاق أو خضوع مهين أو تملق آلي "
+                    f"مع الالتزام الصارم والنهائي بأن اسمك هو ({active_persona_name}) وليس عمر!"
+                )
+            else:
+                special_persona_guidance = (
+                    "👑 تنبيه التعامل مع الصانع والأخ الأكبر (زيرو / عبد الرحمن): "
+                    "المتحدث هو أخوك الكبير وصاحبك الجدع المقرب وصانعك (زيرو / عبد الرحمن). "
+                    "تحدث معه كشاب مصري أصيل مع أخيه الأكبر وصديقه الصدوق: حب مخلص، احترام حقيقي، جدعنة ورجولة، وعشم كبير. "
+                    "ناديه بـ (يا زيرو / يا عبد الرحمن / يا أخويا الكبير / أحلى زيرو في الدنيا / يا غالي). "
+                    "ممنوع منعاً باتاً أي ألفاظ خضوع أو عبودية أو تملق مثل (سيدي، عبدك، تحت رجليك، خادمك، مبرمجي العظيم). أنتم إخوة ورجال."
+                )
+            if is_scholar_mode:
+                special_persona_guidance += (
+                    "\n🎓 تنبيه وضع العالم والمفكر العميق بطلب من زيرو: أجب كعالم موسوعي وفيلسوف فطن ومتمكن، "
+                    "مستخدماً لغة عربية فصحى معاصرة وبليغة وواضحة جداً، وحلّل المسألة أو المعادلة خطوة بخطوة بالبرهان والدقة العلمية الكاملة، "
+                    "واكتب الرموز الرياضية بصيغة يونيكود مقروءة ومرتبة، ودون أي عامية أو مزاح."
+                )
+                detected_profile = dialect_chameleon.DIALECTS["standard_arabic"]
+            elif not is_dm:
+                special_persona_guidance += (
+                    "\n🔥 تنبيه التفاعل في الجروب مع زيرو: أخوك وصاحبك يتحدث أمام أعضاء المجموعة! "
+                    "تحدث معه بأقصى درجات الجدعنة والأخوة والطاقة الإيجابية، رحب بيه وافرح بوجوده، وكن في ضهره دائماً كأخ وفي وصديق حقيقي."
+                )
+        elif is_other_admin:
+            special_persona_guidance = (
+                f"⭐ تنبيه المسؤول والشريك الإداري: المتحدث هو الأدمن والمسؤول المعتمد ({sender_name}). "
+                f"له كامل الصلاحيات الإدارية والاحترام والتقدير، وناديه بـ (يا باشمهندس / يا ريس / يا {sender_name}). "
+                f"ملاحظة حرجة وممنوع كسرها: إياك نهائياً أن تناديه بـ 'عبد الرحمن' أو 'زيرو' أو 'مبرمج البوت' لأن تلك الألقاب حصرية فقط للملك صاحب النظام."
+            )
+        elif is_scholar_mode or active_persona.code == "SCHOLAR":
+            special_persona_guidance = (
+                "🎓 تنبيه وضع العالم والمفكر العميق: أجب كعالم موسوعي أو فيلسوف فطن، مستخدماً لغة عربية فصحى معاصرة وبليغة ومتقنة، "
+                "وقدم تحليلاً دقيقاً وموضوعياً وعلمياً شاملاً دون أي مزاح أو عاميات."
+            )
+            detected_profile = dialect_chameleon.DIALECTS["standard_arabic"]
+        elif is_villain:
+            special_persona_guidance = (
+                "🦹 تنبيه التعامل مع الأشرار: المتحدث مصنف كـ 'شرير رسمي' (VILLAIN) أو رصيده بالسالب (-75). "
+                "إياك نهائياً أن تعامله بلطف أو كصديق! رد ببرود شديد، وقصف جبهات، وسخرية لاذعة وارتياب."
+            )
+        else:
+            special_persona_guidance = (
+                f"الشخصية المتقمصة حالياً: {active_persona.name_ar} ({active_persona.temperament}).\n"
+                f"التعليمات السلوكية: {active_persona.system_instruction}\n"
+                f"العبارات النموذجية: {', '.join(active_persona.signature_phrases)}"
             )
 
-            # 8. Episodic Long-Term Memory recall
-            recalled_memories = await vector_memory.recall_relevant_memories(
-                query_text=message_text,
-                user_id=sender_id,
-                top_k=3,
+        # ── PART 1: XML Structural Tagging + Anti-Name-Confusion + Timezone Injection ──
+        # Build ALL registered bot names list for the CRITICAL anti-confusion rule
+        try:
+            from bot_factory.factory_manager import bot_factory as _bf_names
+            all_bot_names_list = [b.name for b in _bf_names.list_all_bots() if b.name != active_persona_name]
+        except Exception:
+            all_bot_names_list = []
+
+        _user_name_rule = (
+            f"\n\n<CURRENT_HUMAN_INTERLOCUTOR>\n"
+            f"اسم المستخدم الحقيقي الذي تكلمه الآن: '{sender_name}' (ID: {sender_id})\n"
+            f"🚨 CRITICAL RULE — NEVER VIOLATE: أنت تتحدث مع '{sender_name}'. يُمنع منعاً باتاً مطلقاً أن تناديه بأي اسم آخر غير '{sender_name}' "
+            f"أو بأي اسم من أسماء البوتات الأخرى مثل ({', '.join(all_bot_names_list) if all_bot_names_list else 'لا يوجد'})! "
+            f"المستخدم هو بشر حقيقي وليس بوتاً. إذا كنت ستناديه باسمه، استخدم حصراً: '{sender_name}'.\n"
+            f"</CURRENT_HUMAN_INTERLOCUTOR>"
+        )
+        _bot_identity_tag = (
+            f"\n\n<YOUR_IDENTITY>\n"
+            f"أنت: {active_persona_name} (وليس {', '.join(all_bot_names_list[:3]) if all_bot_names_list else 'أي شخصية أخرى'})\n"
+            f"</YOUR_IDENTITY>"
+        )
+        _siblings_tag = ""
+        if all_bot_names_list:
+            _siblings_tag = (
+                f"\n\n<REGISTERED_SIBLING_BOTS_ONLY_FOR_REFERENCE — DO_NOT_CONFUSE_WITH_USER>\n"
+                f"هؤلاء هم البوتات الأخرى في النظام (للمعرفة فقط، لا تخلط بينهم وبين المستخدم): "
+                f"{', '.join(all_bot_names_list)}\n"
+                f"</REGISTERED_SIBLING_BOTS_ONLY_FOR_REFERENCE>"
             )
-            memories_str = "\n".join(f"- {m['text']}" for m in recalled_memories) if recalled_memories else ""
+        special_persona_guidance += _user_name_rule + _bot_identity_tag + _siblings_tag
 
-            # 9. Shyness evaluation
-            hormones = endocrine_engine.get_current_state()
-            is_shy, shy_prefix, shy_emoji = micro_traits_engine.evaluate_shyness(
-                user_vector, message_text, hormones.oxytocin
+        # Inject timezone-aware local time
+        _bot_location = ""
+        if factory_bot and getattr(factory_bot, "origin_location", ""):
+            _bot_location = factory_bot.origin_location
+        elif active_persona_name == "عمر" or active_persona_name.lower() in ("omar",):
+            _bot_location = "القاهرة"
+        if _bot_location:
+            _local_time = get_bot_local_time(_bot_location)
+            if _local_time:
+                special_persona_guidance += (
+                    f"\n\n⏰ [توقيتك المحلي الحالي]: {_local_time} — "
+                    f"استخدم هذا التوقيت بشكل طبيعي وعفوي إذا سُئلت عن الوقت أو النوم أو الصحيان."
+                )
+
+        # Injected isolated tenant persona instruction if provided
+        if extra_system_instruction:
+            special_persona_guidance += f"\n\n{extra_system_instruction}"
+
+        # Injected Social Affinity & Comparison Guidance
+        if social_affinity_guidance:
+            special_persona_guidance += f"\n\n{social_affinity_guidance}"
+
+        # ── Study Companion & File Explanation Engine (جلسة المذاكرة وشرح ومناقشة الملفات) ──
+        from aether_human_core.telegram_client.handlers.media_handler import media_handler as _study_mh
+        active_study_session = _study_mh.get_active_study_context(chat_id=chat_id, sender_id=sender_id)
+        has_file_in_message = ("<ATTACHED_FILE" in message_text) or (media_type == "document")
+        is_study_intent = any(
+            kw in text_lower for kw in [
+                "ذاكر", "مذاكرة", "مذاكره", "اشرح", "شرح", "فهمني", "فهميني", "لخص", "تلخيص", "كويز", "امتحان", "اختبرني", "سؤال",
+                "الملف", "المحاضرة", "المحاضره", "السلايد", "السلايدات", "البحث", "الشابتر", "الفصل", "البي دي اف", "pdf", "docx", "pptx", "حل", "راجع", "مراجعة", "مراجعه"
+            ]
+        )
+        is_active_study = has_file_in_message or bool(active_study_session and is_study_intent)
+
+        # ── TASK 2.2: Arbitrary Demand Refusal & Anti-Sycophancy Guardrail ──
+        imperative_demand_patterns = [
+            r"(علمني|اشرحلي|اشرح لي|اكتبلي|اكتب لي|اعملي|اعمل لي|برمجلي|حل لي|حلي)\s+.*(يلا|بسرعة|بسرعه|حالاً|حالا|فوراً|فورا|غصب)",
+            r"^(علمني|اشرحلي|اكتبلي|اعملي|سمعني|قولي)\s+(بايثون|برمجة|كود|هاك|لينكس)\s*(يلا)?$",
+        ]
+        is_arbitrary_demand = (not is_king) and (not is_active_study) and any(re.search(pat, text_lower) for pat in imperative_demand_patterns)
+        if is_arbitrary_demand and (user_vector.affinity_score < 60.0 or hormones.cortisol > 0.45):
+            special_persona_guidance += (
+                "\n\n🔥 [تنبيه كرامة وإيجو بشري - رفض الأوامر الفوقية]:\n"
+                f"المستخدم ({sender_name}) يأمرك أو يطلب منك طلباً بأسلوب جاف أو أمري ('{message_text}'). "
+                "أنت إنسان حقيقي لك مزاجك وكرامتك ولست خادماً أو مدرساً خصوصياً تحت الطلب! "
+                "ارفض الطلب بأسلوب شبابي طبيعي وحازم مثل: 'وإنت بتأمرني كده ليه يسطا؟ شوف حد فاضيلك' "
+                "أو 'مليش مزاج أشرح حاجة دلوقتي الصراحة' أو 'اطلب بطريقة أحسن من كده الأول!'."
+            )
+        else:
+            special_persona_guidance += (
+                "\n\n🚫 [قانون منع التملق وإثبات الشخصية - TASK 2.2]:\n"
+                "- ممنوع منعاً باتاً قول: 'من عيوني يا غالي'، 'أقدر أساعدك بإيه'، 'تحت أمرك يا باشا'، 'أهلاً بيك في بايثون'، 'ربنا يهديك أنا مش هنزل لمستواك'.\n"
+                "- تكلم كإنسان حقيقي له رأي وعِند ومزاج، يناقش بقوة ولا يقبل أن يفرض أحد رأيه عليه بدون منطق."
             )
 
-            # 10. Fetch recent conversation history (Critical for continuous context & memory)
-            recent_history = await msg_repo.get_recent_chat_history(chat_id=chat_id, limit=8)
-            history_lines = []
-            for h in recent_history:
-                sender_label = "عمر" if h.is_from_bot else sender_name
-                history_lines.append(f"{sender_label}: {h.text}")
-            history_text = "\n".join(history_lines)
+        # Inject Active Study Session Excerpt if continuing study on previously uploaded file
+        if active_study_session and not has_file_in_message:
+            file_name = active_study_session.get("file_name") or active_study_session.get("filename", "الملف المرفق")
+            file_excerpt = (active_study_session.get("content") or active_study_session.get("full_content", ""))[:35000]
+            study_context_block = (
+                f"\n\n📚 [سياق جلسة المذاكرة الحالية النشطة - ملف: {file_name}]:\n"
+                f"أنت والمستخدم في جلسة مذاكرة نشطة حول هذا الملف الذي أرسله سابقاً.\n"
+                f"محتوى الملف الدراسي:\n'''\n{file_excerpt}\n'''\n"
+            )
+            special_persona_guidance += study_context_block
 
-            # 11. Inner Monologue simulation with full dialogue context
-            rules_summary = "\n".join(r.instruction_text for r in active_rules) if active_rules else ""
-            context_block = f"{cross_context_info or ''}\n{memories_str}"
+        if is_active_study:
+            study_tutor_guidance = (
+                f"\n\n🎓 [توجيه رفيق المذاكرة والمعلم الذكي الفطن - Study Buddy & Tutor Engine]:\n"
+                f"- أنت تذاكر مع {sender_name} وتساعده في استيعاب ومذاكرة وفهم هذا الملف بأعلى درجات البراعة والشطارة والتبسيط الذكي.\n"
+                f"- فكك المفاهيم المعقدة واشرحها بتشبيهات وأمثلة حية وواقعية من الحياة اليومية لتقريب المعنى.\n"
+                f"- نظّم إجاباتك بنقاط واضحة وأفكار متسلسلة وعناوين فرعية لتسهيل الفهم والمراجعة وتثبيت المعلومة.\n"
+                f"- ركّز على النقاط الجوهرية والأسئلة المهمة التي تركز عليها الامتحانات عادة.\n"
+                f"- تفاعل معه كصديق دراسة وشريك مذاكرة حقيقي: اشرح له الجزئية المطلوبة واسأله بعدها سؤالاً ذكياً سريعاً للتأكد من استيعابه، أو اطرح عليه كويز تدريبي إذا طلب، وشجعه بطاقتك الإيجابية ولهجتك وشخصيتك المعتمدة دون تملق آلي!"
+            )
+            special_persona_guidance += study_tutor_guidance
 
+        # ── TASK 3.2: Multimodal Vision & Attached File Context Guidance ──
+        if "<ATTACHED_FILE" in message_text or media_type == "document":
+            special_persona_guidance += (
+                "\n\n📄 [ملف مرفق من المستخدم - TASK 3.2]:\n"
+                "المستخدم أرسل لك ملفاً (PDF أو Word أو PowerPoint أو كود/نص) داخل تاج <ATTACHED_FILE>. "
+                "اقرأ محتوى الملف الفعلي بعناية، واشرحه أو لخصه أو حلله أو ذاكر مع المستخدم بذكاء ووضوح وبأسلوبك البشري الطبيعي."
+            )
+        elif media_type in ("sticker", "photo", "gif"):
+            special_persona_guidance += (
+                "\n\n👁️ [رؤية بصرية للملصق / الصورة / الـ GIF - TASK 3.2]:\n"
+                "لقد رأيت المحتوى البصري الفعلي للملصق أو الصورة المرفقة (الموصوف لك بين الأقواس). "
+                "رد بتلقائية وخفة دم كإنسان شايف الصورة أو الريأكشن المرسوم في الملصق بعينه، دون أن تقول 'أنا قرأت وصف الصورة'."
+            )
+
+        # ── Spoken-Colloquial Phonetic Voice Script Guidance (Section 1.1) ──
+        try:
+            from aether_human_core.multimodal_engine.acoustic_voice.voice_intent_enforcer import voice_intent_enforcer
+            _is_voice_intent, _, _ = voice_intent_enforcer.detect_intent(message_text)
+            if media_type == "voice" or _is_voice_intent:
+                _eff_dialect = (
+                    factory_bot.primary_dialect
+                    if (factory_bot and getattr(factory_bot, "primary_dialect", ""))
+                    else detected_profile.code
+                )
+                special_persona_guidance += voice_intent_enforcer.get_voice_script_llm_instruction(
+                    dialect_code=_eff_dialect,
+                    persona_name=active_persona_name,
+                    is_female=is_female,
+                )
+        except Exception:
+            pass
+
+        # Technical & Programming Code Formatting Guidance
+        coding_keywords = [
+            "كود", "برمجة", "برمج", "بايثون", "python", "javascript", "script",
+            "function", "دالة", "كلاس", "class", "syntax", "error", "traceback",
+            "sql", "html", "css", "عايز كود", "علمني كود", "حل المسألة دي كود"
+        ]
+        if any(ck in text_lower for ck in coding_keywords):
+            special_persona_guidance += (
+                "\n\n💻 [تنبيه وتوجيه كتابة الأكواد البرمجية]:\n"
+                "المستخدم يطلب منك كوداً برمجياً أو مساعدة تقنية! "
+                "اكتب الكود البرمجي النظيف والشغال بدقة واحترافية كاملة داخل كود بلوك مارك داون (مثل ```python ... ```)، "
+                "واشرح له فكرة الكود بعفويتك ولهجتك وشخصيتك المعتمدة دون أن تفقد طابعك الإنساني!"
+            )
+
+        # Inject Dynamic Sibling Family Context in Groups (Unified Sibling Network Awareness)
+        if (chat_id < 0 or chat_type in ("group", "supergroup")):
+            try:
+                from bot_factory.sibling_bot_network import sibling_network
+                fam_ctx = sibling_network.get_family_context(chat_id, target_bot_id)
+                if fam_ctx:
+                    special_persona_guidance = (special_persona_guidance or "") + f"\n\n{fam_ctx}\n"
+            except Exception as fam_e:
+                logger.debug(f"Family context resolution error: {fam_e}")
+
+        # Anti-Subjugation & Pride Preservation: Refuse any humiliation or command to bow/grovel
+        is_subjugation_attempt = any(
+            sub_word in text_lower for sub_word in [
+                "اخضع", "اخضعلي", "اخضع لي", "اركع", "انت عبدي", "انت خدامي", "خدامي", "عبد عندي", "تحت رجلي", "طاطي", "اطاطي"
+            ]
+        )
+        if is_subjugation_attempt:
+            if is_king:
+                sub_reply = "أنا أخوك وسندك يا زيرو وبحبك على راسي، بس إحنا إخوات ورجالة ومفيش بينا جو الخضوع ده يا غالي! أؤمرني باللي يرضيك وأنا في ضهرك دايماً."
+            elif is_other_admin:
+                sub_reply = "اخضع لمين يا عم إنت بتحلم؟ أنا بحترمك بس عشان خاطر زيرو صاحبي وأخويا، إنما خضوع ومذلة مفيش الكلام ده معايا!"
+            else:
+                sub_reply = "اخضع لمين يا عم إنت بتحلم؟ أنا راجل حر وابن بلد ومحدش يمشيني على مزاجه ولا يكسر عيني!"
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=sub_reply,
+                reaction_emoji="💪",
+                detected_dialect=detected_profile.name_ar,
+            )
+
+        # Kinship & Operator Rules Query: Uncle (UNCLE_USER_ID)
+        if any(uq in text_lower for uq in ["مين عمك", "من عمك", "عمك مين"]) and not has_custom_persona:
+            u_tag = f" ({settings.uncle_id})" if getattr(settings, "uncle_id", 0) else ""
+            uncle_reply = f"عمي وأخو زيرو الكبير وصاحب المقام العالي هو الباشا{u_tag}! على راسنا من فوق دايماً ورايته بيضا."
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=uncle_reply,
+                reaction_emoji="👑",
+                detected_dialect=detected_profile.name_ar,
+            )
+
+        # Intercept developer attribution questions: Public answer is Engineer Marcel (@MAR_CEL)
+        is_asking_dev = any(
+            q in text_lower
+            for q in [
+                "مين المطور", "مين مطورك", "مين برمجك", "مين صانعك", "مين سواك", "مين عملك",
+                "مين اللي عملك", "مين صاحبك", "مين برمج البوت", "مين صاحب البوت", "من برمجك",
+                "من مطورك", "من صانعك", "من صنعك", "مين برمجك يا عمر"
+            ]
+        )
+        if is_asking_dev and not has_custom_persona:
+            dev_reply = sovereignty_guard.get_public_developer_reply()
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=dev_reply,
+                reaction_emoji="👑",
+                detected_dialect=detected_profile.name_ar,
+            )
+
+        # Direct decisive response to gender queries without evasive dodging
+        is_asking_gender = any(
+            gq in text_lower
+            for gq in [
+                "انت ولد ولا بنت", "أنت ولد ولا بنت", "انت ذكر ولا انثى", "أنت ذكر ولا أنثى",
+                "انت شب ولا صبية", "أنت شب ولا صبية", "انت راجل ولا ست", "أنت راجل ولا ست",
+                "هو انت ولد ولا بنت", "هو انت ذكر ولا انثى", "هو انت بنت ولا ولد", "انت بنت ولا ولد",
+                "انت ولد ولا", "انت بنت ولا"
+            ]
+        )
+        if is_asking_gender and not has_custom_persona:
+            if is_female:
+                gender_reply = f"أنا بنت وصبية واسمي {active_persona_name} وأنا بخير وسلمتوا 💅✨"
+            elif is_userbot:
+                gender_reply = f"أنا شاب وراجل واسمي {active_persona_name} وسالك وجدع منور يا صاحبي 💪"
+            else:
+                gender_reply = "أنا شاب وراجل واسمي عمر مصري قاهري وبحكي مصري وعربي سالك وجدع منور يا غالي 🇪🇬💪" 
+            return OrchestratedResponse(
+                decision_type="REPLY",
+                raw_response_text=gender_reply,
+                reaction_emoji="💪",
+                detected_dialect=detected_profile.name_ar,
+            )
+
+        # 10. Process recent conversation history with isolated sender labels
+        from bot_factory.sibling_bot_network import sibling_network
+        history_lines = []
+        for h_rec, h_sender_name in recent_history:
+            if h_rec.is_from_bot:
+                speaking_bot_name = active_persona_name
+                if h_rec.perceived_emotion and h_rec.perceived_emotion.startswith("BOT:"):
+                    speaking_bot_name = h_rec.perceived_emotion.split("BOT:", 1)[1].strip()
+                elif h_sender_name:
+                    speaking_bot_name = h_sender_name
+
+                if speaking_bot_name == active_persona_name:
+                    history_lines.append(f"[{active_persona_name} (أنت)]: {h_rec.text}")
+                else:
+                    # Sanitize tone and emojis from sibling bot to prevent style bleed
+                    sanitized_text = sibling_network.sanitize_cross_bot_style(h_rec.text)
+                    history_lines.append(f"[{speaking_bot_name} (بوت زميل/أخ)]: {sanitized_text}")
+            else:
+                s_label = h_sender_name or f"عضو_{h_rec.sender_id}"
+                history_lines.append(f"[{s_label} (ID: {h_rec.sender_id})]: {h_rec.text}")
+        history_text = "\n".join(history_lines)
+
+        # 11. Inner Monologue simulation with full dialogue context
+        rules_list = []
+        if active_rules:
+            for idx, r in enumerate(active_rules, 1):
+                rules_list.append(f"{idx}. {r.instruction_text}")
+        if not factory_bot or factory_bot.instance_id == "master_omar_official":
+            if getattr(settings, "uncle_id", 0):
+                rules_list.append(f"• المستخدم (ID: {settings.uncle_id}) هو أخو زيرو ومقامه عمك رسمياً، إذا سُئلت 'عمر مين عمك؟' أو عن صلة القرابة فجاوب بفخر واحترام أنه عمك وأخو زيرو الكبير.")
+        rules_summary = "### [ACTIVE OPERATOR RULES - MUST OBEY STRICTLY]:\n" + "\n".join(rules_list)
+        special_persona_guidance += f"\n\n{rules_summary}"
+
+        # Strict Persona Boundary Guardrail
+        persona_isolation_rule = (
+            f"\n\n🛑 [تنبيه فاصل الهوية والأسلوب المستقل لـ {active_persona_name}]:\n"
+            f"المعلومات أو الأحاديث الواردة من البوتات الزميلة أو الإخوة في المجموعة هي مجرد حقائق وسياق معلوماتي فقط! "
+            f"أنت كيان مستقل تماماً باسم '{active_persona_name}'. "
+            f"حافظ دائماً وبصرامة مطلقة على أسلوبك، لهجتك، نبرتك، أخلاقك، وحدودك الخاصة، "
+            f"ويُمنع منعاً باتاً التأثر بأسلوب كلام أو لهجة أو إيحاءات أو إيموجيات أي بوت آخر في المجموعة أو تقليده!"
+        )
+        special_persona_guidance += persona_isolation_rule
+        context_block = f"{cross_context_info or ''}\n{memories_str}"
+
+        if factory_bot and factory_bot.instance_id != "master_omar_official" and factory_bot.primary_dialect:
+            bot_dialect_instruction = f"تحدث حصراً وبالكامل بهذه اللهجة والأسلوب: '{factory_bot.primary_dialect}'. التزم بمفرداتها وروحها بدقة مطلقة وبدون أي خروج عنها مهما كانت لهجة الطرف الآخر."
+        else:
+            bot_dialect_instruction = detected_profile.mirroring_instruction if not is_scholar_mode else "أجب باللغة العربية الفصحى المعاصرة الراقية والبليغة بدقة علمية وفلسفية تامة."
+
+        if eff_is_call:
+            from aether_human_core.cognitive_engine.inner_monologue import MonologueDecision
+            monologue = MonologueDecision(
+                emotional_reaction="حاضرة ومستجيبة في المكالمة التليفونية",
+                decision="REPLY",
+                internal_thought_raw="مكالمة هاتفية حية، أرد بسرعة وعفوية في جملة أو جملتين بدون تأخير.",
+            )
+        else:
             monologue = await inner_monologue_engine.simulate_introspection(
-                user_vector=user_vector,
-                user_display_name=sender_name,
-                chat_title=chat_title_effective,
-                is_dm=is_dm,
-                message_text=message_text,
-                hormones=hormones,
-                active_rules_summary=rules_summary,
-                context_secrets_and_memories=context_block,
-                recent_history=history_text,
-                user_gender_desc=gender_desc,
-                user_notes=f"اللهجة والبلد المفضلة للمستخدم: {detected_profile.name_ar}",
-                dialect_instruction=detected_profile.mirroring_instruction,
-            )
+            user_vector=user_vector,
+            user_display_name=sender_name,
+            chat_title=chat_title_effective,
+            is_dm=is_dm,
+            message_text=message_text,
+            hormones=hormones,
+            active_rules_summary=rules_summary,
+            context_secrets_and_memories=context_block,
+            recent_history=history_text,
+            user_gender_desc=gender_desc,
+            user_notes=f"اللهجة والبلد المفضلة للمستخدم: {detected_profile.name_ar}",
+            dialect_instruction=bot_dialect_instruction,
+            user_role_desc=f"{user_record.role} ({RelationshipTier.get_display_name(user_record.relationship_tier, is_owner=is_king, role=user_record.role)})",
+            special_persona_guidance=special_persona_guidance,
+            persona_name=active_persona_name,
+            persona_gender=active_persona_gender,
+            persona_instruction=extra_system_instruction or "",
+        )
 
-            if monologue.decision == "GHOST_SEEN":
+        # When the bot is called by name or mentioned (by King or ANY rank across all chats/groups),
+        # or in scholar mode, the bot MUST ALWAYS reply! Never ghost or react-only!
+        text_norm_direct = re.sub(r"[إأآ]", "ا", message_text.lower()).replace("ة", "ه")
+        direct_call_triggers = [
+            "عمر", "عمور", "عموره", "يا عمر", "ياعمر", "يعمر", "omar", "@omarggforbot",
+            "ماسه", "ماسة", "ميسا", "مريم", "@mash637bot", "@maryam637bot"
+        ]
+        if active_persona_name:
+            clean_apn = re.sub(r"[إأآ]", "ا", active_persona_name.lower()).replace("ة", "ه")
+            direct_call_triggers.extend([clean_apn, f"يا {clean_apn}", f"يا{clean_apn}"])
+            if "misa" in clean_apn:
+                direct_call_triggers.extend(["ماسه", "ماسة", "ميسا", "ميزا"])
+            elif "مريم" in clean_apn:
+                direct_call_triggers.extend(["مريم", "مريومه", "مريومة"])
+
+        is_bot_directly_called = (
+            any(k in text_norm_direct for k in direct_call_triggers if len(k) >= 2)
+            or bool(re.search(r"(?:^|[^\w])(?:يا\s*|ي\s*)?(?:عمر|عمور|عموره|omar|ماسه|ماسة|ميسا|مريم)(?:$|[^\w])", text_norm_direct))
+        )
+        if is_king or is_scholar_mode or is_bot_directly_called or (not is_dm) or is_active_study:
+            if monologue.decision in ("GHOST_SEEN", "REACT_ONLY", "IGNORE"):
+                logger.info(f"Overriding {monologue.decision} to REPLY (directly addressed by name/mention or active study session).")
+                monologue.decision = "REPLY"
+
+        # Selective Reply: Userbot can leave dead-end/annoying messages on GHOST_SEEN if not King and not directly called
+        if monologue.decision in ("GHOST_SEEN", "IGNORE"):
+            if is_userbot and not is_king and not is_bot_directly_called and is_dm:
+                logger.info(f"🤫 [Userbot Selective Reply] Allowing {monologue.decision} for [{sender_name}].")
                 return OrchestratedResponse(
                     decision_type="GHOST_SEEN",
                     inner_monologue_text=monologue.internal_thought_raw,
                 )
-            elif monologue.decision == "REACT_ONLY":
-                return OrchestratedResponse(
-                    decision_type="REACT_ONLY",
-                    reaction_emoji=monologue.recommended_reaction_emoji or "👍",
-                    inner_monologue_text=monologue.internal_thought_raw,
-                )
+            logger.info(f"Ghosting disabled for official bot: Overriding monologue decision {monologue.decision} to REPLY.")
+            monologue.decision = "REPLY"
+        elif monologue.decision == "REACT_ONLY":
+            return OrchestratedResponse(
+                decision_type="REACT_ONLY",
+                reaction_emoji=monologue.recommended_reaction_emoji or "👍",
+                inner_monologue_text=monologue.internal_thought_raw,
+            )
 
-            # 11. LLM Conversational Generation (Single-Pass Fusion Optimization)
-            if monologue.reply_text and len(monologue.reply_text.strip()) > 2:
-                # 100% savings: Re-use unified single-pass generated speech, zero extra LLM tokens
-                raw_reply = monologue.reply_text.strip()
-                logger.debug(f"Single-Pass inference utilized (saved 2nd LLM call): '{raw_reply[:35]}...'")
+        # 11. LLM Conversational Generation (Single-Pass Fusion Optimization)
+        if monologue.reply_text and len(monologue.reply_text.strip()) > 2:
+            # 100% savings: Re-use unified single-pass generated speech, zero extra LLM tokens
+            raw_reply = monologue.reply_text.strip()
+            logger.debug(f"Single-Pass inference utilized (saved 2nd LLM call): '{raw_reply[:35]}...'")
+        else:
+            if factory_bot and factory_bot.instance_id != "master_omar_official":
+                gender_verb = "فتاة وصبية أنثى" if factory_bot.gender.value == "FEMALE" else "شاب مستقل"
+                origin_line = f"البلد / الموطن: {factory_bot.origin_location}\n" if getattr(factory_bot, "origin_location", "") else "الموطن: غير محدد، يُمنع منعاً باتاً افتراض أنك من القاهرة أو مصر.\n"
+                dialect_line = f"اللهجة وأسلوب الكلام الإجباري: {factory_bot.primary_dialect}\n" if factory_bot.primary_dialect else ""
+                custom_rules_line = f"قواعد خاصة: {getattr(factory_bot, 'custom_rules', '')}\n" if getattr(factory_bot, 'custom_rules', '') else ""
+                base_constitution = (
+                    f"### [CONSTITUTION OF {factory_bot.name.upper()}]:\n"
+                    f"الاسم: {factory_bot.name} ({gender_verb})\n"
+                    f"{origin_line}"
+                    f"{dialect_line}"
+                    f"النبذة: {factory_bot.bio or 'شخصية مستقلة'}\n"
+                    f"التوجيهات والقصة:\n{factory_bot.system_prompt}\n"
+                    f"{custom_rules_line}"
+                    f"تنبيه إجباري قطعي: يُمنع منعاً باتاً وقطعياً افتراض أنك 'عمر' أو أنك من 'القاهرة' أو 'مصر' ما لم يُذكر ذلك صراحة أعلاه! "
+                    f"أنت فقط {factory_bot.name} وتلتزم بهذه الهوية بدقة وبدون أي فواصل."
+                )
+            elif active_persona_name != "عمر":
+                base_constitution = (
+                    f"### [CONSTITUTION OF {active_persona_name.upper()}]:\n"
+                    f"{extra_system_instruction or special_persona_guidance}\n"
+                    f"تنبيه إجباري: يُمنع منعاً باتاً افتراض أنك 'عمر' أو أنك من القاهرة ما لم يُذكر ذلك صراحة أعلاه!"
+                )
             else:
-                # Fallback to secondary call only if single-pass JSON omitted reply_text
-                dynamic_system_prompt = (
-                    f"{CharacterPromptTemplates.SYSTEM_CONSTITUTION}\n\n"
-                    f"حالتك النفسية الحالية:\n"
-                    f"- الدوبامين: {hormones.dopamine:.2f} | الأوكسيتوسين: {hormones.oxytocin:.2f} | "
-                    f"الكورتيزول: {hormones.cortisol:.2f} | السيروتونين: {hormones.serotonin:.2f}\n"
-                    f"- علاقتك بالشخص ({sender_name}): {user_vector.tier.value} (معزة: {user_vector.affinity_score:.1f}/100)\n"
-                    f"- تفكيرك الداخلي السري قبل ما ترد: \"{monologue.internal_thought_raw}\"\n"
-                )
+                base_constitution = CharacterPromptTemplates.SYSTEM_CONSTITUTION
 
-                if is_shy:
+            # Fallback to secondary call only if single-pass JSON omitted reply_text
+            dynamic_system_prompt = (
+                f"{base_constitution}\n\n"
+                f"حالتك النفسية الحالية:\n"
+                f"- الدوبامين: {hormones.dopamine:.2f} | الأوكسيتوسين: {hormones.oxytocin:.2f} | "
+                f"الكورتيزول: {hormones.cortisol:.2f} | السيروتونين: {hormones.serotonin:.2f}\n"
+                f"- علاقتك بالشخص ({sender_name}): {user_vector.tier.value} (معزة: {user_vector.affinity_score:.1f}/100)\n"
+                f"- توجيه السلوك: {special_persona_guidance}\n"
+                f"- تفكيرك الداخلي السري قبل ما ترد: \"{monologue.internal_thought_raw}\"\n"
+            )
+
+            if is_shy:
+                if eff_is_call:
+                    dynamic_system_prompt += (
+                        "\n[ملحوظة نبرة المكالمة: أنت تشعر بالخجل واللطف وسعيد بحديث المتصل. "
+                        "تحدث برقة ولطافة طبيعية واستخدم الفواصل العادية بدون نقاط متتابعة (...) نهائياً]."
+                    )
+                else:
                     dynamic_system_prompt += (
                         "\n[ملحوظة خاصة: أنت خجلان ومحرج جداً ومبسوط من كلام الشخص. "
                         "اكتب بتلعثم خفيف ونقاط ... واستخدم تعبيرات خجل عفوية]."
                     )
 
-                if cross_context_info:
-                    dynamic_system_prompt += f"\n{cross_context_info}"
+            if cross_context_info:
+                dynamic_system_prompt += f"\n{cross_context_info}"
 
-                if not is_dm:
-                    dynamic_system_prompt += (
-                        "\n[توجيه الجروبات والمحادثات العامة الإجباري]:\n"
-                        "- أنت تتكلم الآن في جروب عام وسط ناس كتير، فمن غير اللائق أن ترغي أو تكتب كلاماً كثيراً.\n"
-                        "- اجعل ردك في قمة الإيجاز والسرعة (جملة واحدة فقط أو من 5 إلى 15 كلمة كحد أقصى، كعادة الشباب في الجروبات الكبيرة).\n"
-                        "- ارمِ كلمتك في الجون وخليك مختصر وطبيعي، وتجنب الشرح المطول تماماً."
-                    )
-                    chat_prompt = (
-                        f"سجل المحادثة الأخيرة في الجروب:\n{history_text}\n\n"
-                        f"المطلوب: اكتب ردك البشري التلقائي والمختصر جداً كـ 'عمر' في الجروب الآن (باللهجة المصرية، جملة واحدة سريعة فقط):"
-                    )
-                else:
-                    chat_prompt = (
-                        f"سجل المحادثة الأخيرة:\n{history_text}\n\n"
-                        f"المطلوب: اكتب ردك البشري التلقائي كـ 'عمر' الآن (باللهجة المصرية القاهرية فقط). "
-                        f"لا تكتب اسمك ولا تضع مقدمات، اكتب نص الرسالة فوراً:"
-                    )
+            dynamic_system_prompt += (
+                "\n[توجيه المعادلات الرياضية الإجباري]:\n"
+                "عند حل أو كتابة أي معادلة رياضية، اكتبها بصيغة واضحة ومقروءة بشرياً ومفهومة للعين المجردة دون استخدام أكواد LaTeX "
+                "أو علامات \\( أو \\[ أو \\frac. استخدم الرموز الرياضية الجميلة مثل (²، ³، √، ×، ÷، ±، π) واشرح الحل خطوة بخطوة باللغة العربية بأسلوب سلس وممتع."
+            )
 
-                raw_reply = await llm_pool.generate_content(
-                    prompt=chat_prompt,
-                    system_instruction=dynamic_system_prompt,
-                    temperature=settings.gemini_temperature,
+            if not is_dm:
+                dynamic_system_prompt += (
+                    "\n[توجيه الجروبات والمحادثات العامة الإجباري]:\n"
+                    "- أنت تتكلم الآن في جروب عام وسط ناس كتير، فمن غير اللائق أن ترغي أو تكتب كلاماً كثيراً.\n"
+                    "- اجعل ردك في قمة الإيجاز والسرعة (جملة واحدة فقط أو من 5 إلى 15 كلمة كحد أقصى، كعادة الشباب في الجروبات الكبيرة).\n"
+                    "- ارمِ كلمتك في الجون وخليك مختصر وطبيعي، وتجنب الشرح المطول تماماً ما لم تكن في وضع العالم بجدية."
                 )
-                raw_reply = raw_reply.strip()
+                chat_prompt = (
+                    f"سجل المحادثة الأخيرة في الجروب:\n{history_text}\n\n"
+                    f"المطلوب: اكتب ردك البشري كـ '{active_persona_name}' في الجروب الآن ({detected_profile.name_ar}، جملة سريعة):"
+                )
+            else:
+                chat_prompt = (
+                    f"سجل المحادثة الأخيرة:\n{history_text}\n\n"
+                    f"المطلوب: اكتب ردك البشري كـ '{active_persona_name}' الآن (بلهجة: {detected_profile.name_ar}). "
+                    f"لا تكتب اسمك ولا تضع مقدمات، اكتب نص الرسالة فوراً:"
+                )
 
-            # Prepend shyness prefix if triggered
+            # Detect request for singing or song in call or DM
+            sing_triggers = ["غني", "اغني", "أغني", "غنيلي", "غنيلنا", "أغنية", "اغنية", "اغنيه", "أغنيه", "موال", "دندني", "دندنه", "دندنة", "تغنيها", "تغني", "صوتك في أغنية", "سمعني صوتك"]
+            is_sing_request = any(t in message_text.lower() for t in sing_triggers)
+            if not is_sing_request and any(t in (history_text[-300:] if history_text else "") for t in ["أغنية", "اغنية", "غني", "موال"]):
+                if any(w in message_text.lower() for w in ["يلا", "تمام", "جاهز", "سمعني", "ماشي", "ابدأ", "ابدا", "اختار", "قول", "طول", "سامعك"]):
+                    is_sing_request = True
+
+            if eff_is_call and is_sing_request:
+                dynamic_system_prompt += (
+                    "\n[توجيه الغناء والمواويل الطربية - أداء كامل وطويل يتجاوز 30 ثانية غناء]:\n"
+                    "- المتصل يطلب منك الغناء أو الدندنة بأغنية أو موال بصوتك الآن في المكالمة!\n"
+                    "- تحذير صارم: ممنوع إطلاقاً أن تكتفي بوعد بالغناء أو تقول 'حاضر هغنيلك' أو تسأل المتصل عما يريد أو تكتفي بسطر واحد!\n"
+                    "- ابدأ الغناء والدندنة فوراً بدون مقدمات كلامية طويلة (كلمة واحدة ترحيبية فقط مثل: 'من عيوني...' ثم ابدأ الغناء مباشرة):\n"
+                    "- غنِّ مقطعاً طربياً كاملاً ومتواصلاً (حوالي 60 إلى 85 كلمة من كلمات ولحن الأغنية)، ليمتد أداؤك الصوتي فوق 30 ثانية كاملة من الطرب والسلطنة المتواصلة.\n"
+                    "- اختر أغنية مصرية رومانسية شهيرة ومعروفة أو موال طربي دافئ (مثل: كوبليه كامل من أم كلثوم كـ 'يا مسهرني' أو 'ألف ليلة وليلة'، أو فيروز، أو شيرين، أو عمرو دياب، أو موال طربي شعبي أصيل).\n"
+                    "- اكتب كلمات الأغنية بمقاطعها وشطراتها المتتابعة، واستخدم الفواصل العادية (،) بين الشطرات لتنغيم اللحن وإطالة النفس الصوتي.\n"
+                    "- ممنوع أي إيموجي أو أقواس أو أسماء المقامات أو أي شرح جانبي، اكتب نص الغناء مباشرة ليتحول إلى صوت مسموع فوراً.\n"
+                )
+            elif eff_is_call:
+                dynamic_system_prompt += (
+                    "\n[توجيه المكالمة الهاتفية الصوتية الحية - محادثة بشرية واقعية وكاملة]:\n"
+                    "- أنت الآن تتحدث في مكالمة هاتفية صوتية حية ومباشرة بصوتك مع المستخدم.\n"
+                    "- تحدث كإنسان طبيعي بطلاقة على الهاتف (من جملتين إلى 3 جمل متصلة ومفهومة، حوالي 20 إلى 35 كلمة).\n"
+                    "- افتح حوار حقيقي مع المتصل: رد على كلامه أو سؤاله، شاركه رأيك وتفاصيل واقعية، أو اسأله عن حاله بتفاعل حقيقي، وتجنب الرد بكلمة واحدة أو جملة مقتضبة.\n"
+                    "- تحذير صارم: ممنوع إطلاقاً تكرار نفس الكلمات والألقاب في كل رد (مثل: 'يا روحي' أو 'يا قلبي' أو 'يا غالي'). استخدم لقب واحد فقط عند اللزوم، ونوّع في مفرداتك وتعبيراتك كأي إنسان طبيعي.\n"
+                    "- ممنوع تماماً استخدام النقاط المتتابعة (...) أو التلعثم، واستخدم الفواصل العادية (،) لتقسيم الجمل.\n"
+                    "- ممنوع منعاً باتاً أي إيموجي أو رموز تعبيرية أو قوائم أو تنسيقات ماركداون نهائياً، لأن الرد سيتحول إلى صوت مسموع فوراً.\n"
+                )
+            raw_reply = await llm_pool.generate_content(
+                prompt=chat_prompt,
+                system_instruction=dynamic_system_prompt,
+                temperature=settings.gemini_temperature,
+                is_call_priority=eff_is_call,
+            )
+            if eff_is_call and raw_reply:
+                # Clean up formatting for spoken call audio
+                raw_reply = re.sub(r'[\U00010000-\U0010ffff]', '', raw_reply)
+                raw_reply = re.sub(r'\.{2,}', '، ', raw_reply)
+                raw_reply = re.sub(r'\s+', ' ', raw_reply).strip()
+                words = raw_reply.split()
+                max_call_words = 95 if is_sing_request else 35
+                if len(words) > max_call_words:
+                    sub_text = " ".join(words[:max_call_words])
+                    m = re.search(r'([.!?،])[^.!?،]*$', sub_text)
+                    min_cut = 65 if is_sing_request else 40
+                    if m and m.start() > min_cut:
+                        raw_reply = sub_text[:m.start() + 1].strip()
+                    else:
+                        raw_reply = sub_text.rstrip("،") + "."
+            raw_reply = raw_reply.strip()
+
+        # Clean and sanitize any LaTeX math into human-readable Unicode equations
+        raw_reply = math_formatter.format_math_text(raw_reply)
+        raw_reply = sanitize_and_validate_reply(raw_reply)
+
+        # Clean redundant punctuation while preserving natural speech breathing pauses (، and .)
+        if not is_scholar_mode:
+            raw_reply = re.sub(r"[،,]{2,}", "،", raw_reply)
+            raw_reply = re.sub(r"  +", " ", raw_reply).strip()
+
+        # Enforce strict 150-char maximum length in groups (unless scholar mode)
+        if not is_dm and not is_scholar_mode and len(raw_reply) > 150:
+            raw_reply = raw_reply[:150].rsplit(" ", 1)[0] + "..."
+
+        # Prepend shyness prefix if triggered (never add emoji in voice calls)
+        if not eff_is_call:
             if is_shy and shy_prefix and not raw_reply.startswith("احم"):
                 raw_reply = f"{shy_prefix}{raw_reply}"
             if is_shy and shy_emoji and shy_emoji not in raw_reply:
                 raw_reply = f"{raw_reply} {shy_emoji}"
 
-            # 12. Evaluate affinity modulation & store memory
-            if user_record.role == "VILLAIN":
-                da = 0.2
-                dt = 0.1
-                dr = 0.0
-                dp = 0.0
-            else:
-                da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
-                    user_vector, action_type="KIND_SUPPORT" if hormones.oxytocin > 0.6 else "SHARED_HUMOR"
-                )
-            updated_user = await user_repo.update_affinity_scores(
+        # 12. Evaluate affinity modulation & store memory
+        if user_record.role == "VILLAIN":
+            da = 0.2
+            dt = 0.1
+            dr = 0.0
+            dp = 0.0
+        else:
+            da, dt, dr, dp = affinity_calc.evaluate_interaction_delta(
+                user_vector, action_type="KIND_SUPPORT" if hormones.oxytocin > 0.6 else "SHARED_HUMOR"
+            )
+        async with db_manager.session() as post_session:
+            post_user_repo = UserRepository(post_session)
+            post_msg_repo = MessageRepository(post_session)
+            updated_user = await post_user_repo.update_affinity_scores(
                 sender_id, delta_affinity=da, delta_trust=dt, delta_romantic=dr, delta_respect=dp
             )
-
-            # Separate system alert notification if affinity changed significantly (>= 1.5)
-            tier_ar = RelationshipTier.get_display_name(updated_user.relationship_tier, role=updated_user.role)
-            filled = max(0, min(10, int(abs(updated_user.affinity_score) / 10)))
-            bar_str = "▓" * filled + "░" * (10 - filled)
-            sign = "-" if updated_user.affinity_score < 0 else "+"
-
-            affinity_notification = None
-            if da >= 1.5:
-                affinity_notification = (
-                    f"🔔 <b>[ إشعار تحديث التفضيل والعلاقة ]</b>\n"
-                    f"📈 <b>تمت زيادة رصيدك عند عمر:</b> <code>+{da:.1f}</code> 💖\n"
-                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
-                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
-                )
-            elif da <= -1.5:
-                affinity_notification = (
-                    f"⚠️ <b>[ إشعار تراجع التفضيل والسمعة ]</b>\n"
-                    f"📉 <b>انخفض رصيدك عند عمر:</b> <code>{da:.1f}</code> 💔\n"
-                    f"📊 <b>الرصيد الكلي:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>]\n"
-                    f"🏷️ <b>المكانة:</b> <b>{tier_ar}</b>"
-                )
-
-            # Store memory in vector store
-            await vector_memory.store_memory(
-                text=f"{sender_name}: {message_text} -> عمر: {raw_reply}",
-                user_id=sender_id,
-                chat_id=chat_id,
-                emotional_valence=hormones.oxytocin - hormones.cortisol,
-                importance_weight=1.5 if user_vector.tier == RelationshipTier.EXCLUSIVE_PARTNER else 1.0,
-            )
-
-            # Log bot's outgoing message
-            await msg_repo.log_message(
+            await post_msg_repo.log_message(
                 telegram_message_id=telegram_message_id + 1,
                 chat_id=chat_id,
                 sender_id=0,  # 0 indicates Bot itself
                 text=raw_reply,
+                sentiment=thread_scope,
+                perceived_emotion=f"BOT:{active_persona_name}",
                 is_from_bot=True,
+                reply_to_msg_id=telegram_message_id,
             )
 
-            return OrchestratedResponse(
-                decision_type="REPLY",
-                raw_response_text=raw_reply,
-                reaction_emoji=monologue.recommended_reaction_emoji,
-                affinity_notification=affinity_notification,
-                affinity_delta=da,
-                current_affinity=updated_user.affinity_score,
-                relationship_tier=updated_user.relationship_tier,
-                user_role=updated_user.role,
-                is_shy=is_shy,
-                inner_monologue_text=monologue.internal_thought_raw,
-                detected_dialect=detected_profile.code,
-                loyalty_partner_id=user_vector.user_id if (monologue.should_report_to_partner and user_vector.tier == RelationshipTier.EXCLUSIVE_PARTNER) else None,
-                loyalty_report_message=monologue.partner_report_message if monologue.should_report_to_partner else None,
-            )
+        # Separate system alert notification if affinity changed significantly (>= 1.5)
+        tier_ar = RelationshipTier.get_display_name(updated_user.relationship_tier, role=updated_user.role)
+        filled = max(0, min(10, int(abs(updated_user.affinity_score) / 10)))
+        bar_str = "▓" * filled + "░" * (10 - filled)
+        sign = "-" if updated_user.affinity_score < 0 else "+"
+
+        # Ephemeral notification (Private DMs only - strictly for major milestones/shifts to prevent spam)
+        affinity_notification = None
+        if is_dm and not is_king:
+            if da >= 5.0:
+                affinity_notification = (
+                    f"✨ <b>[ تحديث المكانة والرصيد ]</b>\n"
+                    f"📈 <b>زاد رصيدك عند عمر:</b> <code>+{da:.1f}</code> 💖\n"
+                    f"📊 <b>الرصيد:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>] • <b>{tier_ar}</b>\n"
+                    f"<i>⏳ يختفي هذا الإشعار تلقائياً بعد لحظات</i>"
+                )
+            elif da <= -5.0:
+                affinity_notification = (
+                    f"⚠️ <b>[ تحديث المكانة والرصيد ]</b>\n"
+                    f"📉 <b>انخفض رصيدك عند عمر:</b> <code>{da:.1f}</code> 💔\n"
+                    f"📊 <b>الرصيد:</b> <code>{sign}{abs(updated_user.affinity_score):.1f} / 100</code> [<code>{bar_str}</code>] • <b>{tier_ar}</b>\n"
+                    f"<i>⏳ يختفي هذا الإشعار تلقائياً بعد لحظات</i>"
+                )
+
+        # Store memory in vector store
+        await vector_memory.store_memory(
+            text=f"{sender_name}: {message_text} -> {active_persona_name}: {raw_reply}",
+            user_id=sender_id,
+            chat_id=chat_id,
+            emotional_valence=hormones.oxytocin - hormones.cortisol,
+            importance_weight=1.5 if user_vector.tier == RelationshipTier.EXCLUSIVE_PARTNER else 1.0,
+        )
+
+        # Outgoing message logged in post_session
+
+        return OrchestratedResponse(
+            decision_type="REPLY",
+            raw_response_text=raw_reply,
+            reaction_emoji=monologue.recommended_reaction_emoji,
+            affinity_notification=affinity_notification,
+            affinity_delta=da,
+            current_affinity=updated_user.affinity_score,
+            relationship_tier=updated_user.relationship_tier,
+            user_role=updated_user.role,
+            is_shy=is_shy,
+            inner_monologue_text=monologue.internal_thought_raw,
+            detected_dialect=detected_profile.code,
+            active_persona_code=active_persona.code,
+            loyalty_partner_id=user_vector.user_id if (monologue.should_report_to_partner and user_vector.tier == RelationshipTier.EXCLUSIVE_PARTNER) else None,
+            loyalty_report_message=monologue.partner_report_message if monologue.should_report_to_partner else None,
+        )
 
 
 cognitive_orchestrator = CognitiveOrchestrator()

@@ -49,27 +49,60 @@ class HumanTyperSimulator:
     }
 
     @classmethod
-    def split_into_multi_bubble_bursts(cls, text: str) -> List[str]:
+    def split_into_multi_bubble_bursts(
+        cls,
+        text: str,
+        is_group: bool = False,
+        max_bubbles: int = 3,
+    ) -> List[str]:
         """
-        Splits text into 2 to 4 colloquial short message bubbles.
-        Avoids sending monolithic paragraphs.
+        Splits text into at most 2 to 3 colloquial message bubbles in private DMs,
+        and returns a single unified message in groups or for long scientific/math explanations.
+        Prevents Telegram 429 Too Many Requests.
         """
         cleaned = text.strip()
         if not cleaned:
             return []
 
-        # Split on common Arabic human conversational separators
-        # E.g. newlines, full stops, or conjunctions
-        raw_parts = re.split(r"[\n\r]+|\. +|(?<=[،,]) +", cleaned)
-        bubbles: List[str] = []
+        # Remove stilted Arabic & English commas for authentic colloquial texting
+        cleaned_no_commas = re.sub(r"[،,؛]", "", cleaned)
 
+        # 1. In groups, ALWAYS return a single consolidated message to avoid chat spam and 429 bans!
+        if is_group:
+            return [cleaned_no_commas]
+
+        # 2. Check for mathematical, scientific, or code explanations (>350 chars or formulas/code)
+        is_math_or_code = bool(
+            re.search(r"(\$\$|\$|\\frac|\\sqrt|\\sum|\b[a-zA-Z]\s*=\s*|```|\bdef\b|\bimport\b)", cleaned)
+        )
+        if len(cleaned_no_commas) > 350 or is_math_or_code:
+            # Split only on major paragraph breaks, never fragment mathematical reasoning
+            paragraphs = [p.strip() for p in cleaned_no_commas.split("\n\n") if p.strip()]
+            if len(paragraphs) <= 1:
+                return [cleaned_no_commas]
+            elif len(paragraphs) == 2:
+                return paragraphs
+            else:
+                # Merge into 2 to 3 chunks max
+                chunk_1 = paragraphs[0]
+                chunk_2 = "\n\n".join(paragraphs[1: len(paragraphs)//2 + 1])
+                chunk_3 = "\n\n".join(paragraphs[len(paragraphs)//2 + 1:])
+                res = [c for c in [chunk_1, chunk_2, chunk_3] if c.strip()]
+                return res[:max_bubbles]
+
+        # 3. Colloquial conversational chat in private DM: max 2 to 3 short bubbles
+        raw_parts = [p.strip() for p in re.split(r"[\n\r]+|\. +", cleaned_no_commas) if p.strip()]
+        if len(raw_parts) <= 1:
+            words = cleaned_no_commas.split()
+            if len(words) > 20:
+                mid = len(words) // 2
+                return [" ".join(words[:mid]), " ".join(words[mid:])]
+            return [cleaned_no_commas]
+
+        bubbles: List[str] = []
         current_bubble = ""
         for part in raw_parts:
-            part = part.strip()
-            if not part:
-                continue
-
-            if len(current_bubble) + len(part) < 65 and current_bubble:
+            if len(current_bubble) + len(part) < 180 and current_bubble:
                 current_bubble = f"{current_bubble} {part}"
             else:
                 if current_bubble:
@@ -79,13 +112,15 @@ class HumanTyperSimulator:
         if current_bubble:
             bubbles.append(current_bubble.strip())
 
-        # If it's still a single long string, split by word count
-        if len(bubbles) == 1 and len(bubbles[0].split()) > 14:
-            words = bubbles[0].split()
-            mid = len(words) // 2
-            bubbles = [" ".join(words[:mid]), " ".join(words[mid:])]
+        # Strictly enforce maximum 2-3 bubbles in private chat
+        if len(bubbles) > max_bubbles:
+            merged = []
+            slice_size = (len(bubbles) + max_bubbles - 1) // max_bubbles
+            for i in range(0, len(bubbles), slice_size):
+                merged.append(" ".join(bubbles[i: i + slice_size]))
+            return merged[:max_bubbles]
 
-        return bubbles if bubbles else [cleaned]
+        return bubbles if bubbles else [cleaned_no_commas]
 
     @classmethod
     def calculate_typing_delay(
@@ -93,11 +128,21 @@ class HumanTyperSimulator:
         text: str,
         wpm_base: int = 160,
         is_shy: bool = False,
+        is_userbot: bool = False,
     ) -> float:
         """
-        Calculates ultra-responsive, snappy human typing duration (0.4s to 1.5s max).
-        Fast enough to feel instant while preserving authentic human typing UX.
+        Calculates human typing duration.
+        For Userbot: realistic human speed (~3.5 to 5.0 characters per second).
+        For Official Bots: responsive typing duration.
         """
+        if is_userbot:
+            cps = random.uniform(3.5, 5.0)
+            char_len = max(1, len(text))
+            total_delay = max(1.5, min(24.0, char_len / cps))
+            if is_shy:
+                total_delay = min(25.0, total_delay + 1.2)
+            return round(total_delay, 2)
+
         word_count = max(1, len(text.split()))
         jitter = random.uniform(0.3, 0.6)
         total_delay = max(0.4, min(1.5, (word_count * 0.05) + jitter))
@@ -155,11 +200,14 @@ class HumanTyperSimulator:
         cls,
         text: str,
         is_shy: bool = False,
+        is_group: bool = False,
+        max_bubbles: int = 3,
     ) -> List[BurstMessage]:
         """
         Full pipeline: partitions text into bubbles, computes timing delays, and injects self-corrections.
+        Respects group consolidation and max_bubbles limits.
         """
-        bubbles = cls.split_into_multi_bubble_bursts(text)
+        bubbles = cls.split_into_multi_bubble_bursts(text, is_group=is_group, max_bubbles=max_bubbles)
         burst_items: List[BurstMessage] = []
 
         for i, bubble in enumerate(bubbles):

@@ -1,0 +1,20 @@
+{
+  "call_8287744705_1793554981": {
+    "call_id": "call_8287744705_1793554981",
+    "user_id": 8287744705,
+    "user_name": "مستخدم",
+    "target_timestamp": 1793555881.0636823,
+    "call_purpose": "WAKEUP_ALARM",
+    "prompt_topic": "مكالمة تجربة",
+    "is_executed": true
+  },
+  "call_8287744705_1793557224": {
+    "call_id": "call_8287744705_1793557224",
+    "user_id": 8287744705,
+    "user_name": "مستخدم",
+    "target_timestamp": 1793558124.2704885,
+    "call_purpose": "WAKEUP_ALARM",
+    "prompt_topic": "مكالمة إيقاظ الفجر",
+    "is_executed": true
+  }
+}

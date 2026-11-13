@@ -6,11 +6,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aether_human_core.database.postgres.models import ChatModel, MessageRecordModel
+from aether_human_core.database.postgres.models import ChatModel, MessageRecordModel, UserModel
 
 logger = logging.getLogger("Aether.Repo.Message")
 
@@ -76,19 +76,41 @@ class MessageRepository:
         await self.session.flush()
         return record
 
+    @staticmethod
+    def build_thread_scope(bot_id: str, sender_id: int) -> str:
+        """
+        Deterministic 26-char conversation-thread tag for strict
+        (bot_id, chat_id, sender_user_id) isolation. Stored in the `sentiment` column.
+        In DMs every bot shares chat_id == user_id, so without this tag the history of
+        one bot's DM bleeds into another bot's DM with the same user.
+        """
+        import hashlib
+        digest = hashlib.md5(f"{bot_id}|{sender_id}".encode("utf-8")).hexdigest()[:24]
+        return f"T:{digest}"
+
     async def get_recent_chat_history(
         self,
         chat_id: int,
         limit: int = 15,
-    ) -> List[MessageRecordModel]:
+        thread_scope: Optional[str] = None,
+    ) -> List[Tuple[MessageRecordModel, Optional[str]]]:
+        """
+        Returns recent messages along with sender's actual registered first_name.
+        Guarantees zero name confusion or cross-talk between group members.
+        When `thread_scope` is given, ONLY messages of that exact (bot, user) thread are returned.
+        """
+        conditions = [MessageRecordModel.chat_id == chat_id]
+        if thread_scope:
+            conditions.append(MessageRecordModel.sentiment == thread_scope)
         stmt = (
-            select(MessageRecordModel)
-            .where(MessageRecordModel.chat_id == chat_id)
+            select(MessageRecordModel, UserModel.first_name)
+            .outerjoin(UserModel, MessageRecordModel.sender_id == UserModel.telegram_id)
+            .where(*conditions)
             .order_by(desc(MessageRecordModel.created_at))
             .limit(limit)
         )
         result = await self.session.execute(stmt)
-        records = list(result.scalars().all())
+        records = list(result.all())
         records.reverse()  # Return in chronological order
         return records
 

@@ -1,7 +1,7 @@
 """
 Circadian Rhythm and Biological Sleep Schedule Simulation for Aether-Human.
 Calculates energy levels, alertness, sleep cycles, and late-night typographical error multipliers.
-Synchronized with Egyptian timezone (UTC+2 / Africa/Cairo).
+Synchronized with Cairo, Egypt timezone (UTC+3 / Africa/Cairo).
 """
 
 from __future__ import annotations
@@ -15,9 +15,10 @@ logger = logging.getLogger("Aether.Psychology.Circadian")
 
 class CircadianRhythmEngine:
     """
-    Simulates the biological day-night cycle of a 24-year-old living in Cairo.
+    Simulates the biological day-night cycle of a 24-year-old living in Cairo, Egypt.
     """
-    CAIRO_OFFSET_HOURS = 2  # Standard Egypt UTC+2
+    CAIRO_OFFSET_HOURS = 3     # Standard Cairo UTC+3 (Africa/Cairo)
+    DAMASCUS_OFFSET_HOURS = 3  # Kept for backwards compatibility
 
     # Schedule definitions (Hours in 24h format)
     SLEEP_START_HOUR = 3.5    # 03:30 AM
@@ -32,12 +33,16 @@ class CircadianRhythmEngine:
         return datetime.now(cairo_tz)
 
     @classmethod
+    def get_damascus_now(cls) -> datetime:
+        return cls.get_cairo_now()
+
+    @classmethod
     def evaluate_circadian_state(cls) -> Dict[str, Any]:
         """
         Analyzes the current biological clock phase and returns operational modifiers.
         """
-        cairo_now = cls.get_cairo_now()
-        hour_fraction = cairo_now.hour + (cairo_now.minute / 60.0)
+        local_now = cls.get_cairo_now()
+        hour_fraction = local_now.hour + (local_now.minute / 60.0)
 
         is_sleeping = False
         is_groggy = False
@@ -89,8 +94,15 @@ class CircadianRhythmEngine:
             state_name = "AFTERNOON_FOCUSED"
             description_ar = "فترة النهار والتركيز في الشغل"
 
+        cairo_clock = local_now.strftime("%I:%M %p").replace("AM", "صباحاً").replace("PM", "مساءً")
         return {
-            "cairo_time_str": cairo_now.strftime("%Y-%m-%d %H:%M:%S"),
+            "cairo_time_str": cairo_clock,
+            "cairo_raw_time": local_now.strftime("%H:%M"),
+            "damascus_time_str": cairo_clock,
+            "damascus_raw_time": local_now.strftime("%H:%M"),
+            "timezone_label": "القاهرة، مصر (UTC+3)",
+            "hour": local_now.hour,
+            "minute": local_now.minute,
             "hour_fraction": round(hour_fraction, 2),
             "state_name": state_name,
             "description_ar": description_ar,

@@ -4,15 +4,32 @@ Repository for User Profile operations, Affinity Matrix queries, and relationshi
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Dict
 from sqlalchemy import select, update, desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aether_human_core.database.postgres.models import UserModel
+import time
 
 logger = logging.getLogger("Aether.Repo.User")
+
+_user_creation_locks: Dict[int, asyncio.Lock] = {}
+_creation_meta_lock = asyncio.Lock()
+
+# In-memory TTL Cache (10 minutes) for high-performance user profile lookups
+_user_ttl_cache: Dict[int, Tuple[float, UserModel]] = {}
+USER_CACHE_TTL: float = 600.0  # 10 minutes
+
+
+async def _get_user_creation_lock(telegram_id: int) -> asyncio.Lock:
+    async with _creation_meta_lock:
+        if telegram_id not in _user_creation_locks:
+            _user_creation_locks[telegram_id] = asyncio.Lock()
+        return _user_creation_locks[telegram_id]
 
 
 class UserRepository:
@@ -27,10 +44,11 @@ class UserRepository:
         stmt = select(UserModel).where(UserModel.telegram_id == telegram_id)
         result = await self.session.execute(stmt)
         user = result.scalars().first()
-        if user and telegram_id in settings.super_admin_ids_list:
-            if not user.role:
-                user.role = "SUPER_ADMIN"
-                await self.session.flush()
+        if user:
+            if telegram_id in settings.super_admin_ids_list:
+                if not user.role:
+                    user.role = "SUPER_ADMIN"
+                    await self.session.flush()
         return user
 
     async def get_or_create(
@@ -41,41 +59,69 @@ class UserRepository:
         username: Optional[str] = None,
         gender: str = "unknown",
     ) -> UserModel:
-        user = await self.get_by_telegram_id(telegram_id)
-        if user is None:
-            from aether_human_core.config.settings import settings
-            is_super = telegram_id in settings.super_admin_ids_list
-            user = UserModel(
-                telegram_id=telegram_id,
-                first_name=first_name or "",
-                last_name=last_name or "",
-                username=username,
-                gender=gender,
-                affinity_score=100.0 if is_super else 0.0,
-                trust_score=100.0 if is_super else 20.0,
-                romantic_attachment=100.0 if is_super else 0.0,
-                respect_dominance=50.0 if is_super else 0.0,
-                relationship_tier="EXCLUSIVE_PARTNER" if is_super else "STRANGER",
-                role="SUPER_ADMIN" if is_super else "MEMBER",
-                created_at=datetime.utcnow(),
-                last_interaction_at=datetime.utcnow(),
-            )
-            self.session.add(user)
-            await self.session.flush()
-            logger.info(f"Registered new User [tg_id={telegram_id}, name={first_name}] into Unified Profile.")
-        else:
-            # Refresh last active time and name metadata if changed
-            updated = False
-            if first_name and user.first_name != first_name:
-                user.first_name = first_name
-                updated = True
-            if username and user.username != username:
-                user.username = username
-                updated = True
-            user.last_interaction_at = datetime.utcnow()
-            if updated:
-                await self.session.flush()
-        return user
+        user_lock = await _get_user_creation_lock(telegram_id)
+        async with user_lock:
+            user = await self.get_by_telegram_id(telegram_id)
+            if user is None:
+                from aether_human_core.config.settings import settings
+                is_super = telegram_id in settings.super_admin_ids_list
+                user = UserModel(
+                    telegram_id=telegram_id,
+                    first_name=first_name or "",
+                    last_name=last_name or "",
+                    username=username,
+                    gender=gender,
+                    affinity_score=100.0 if is_super else 0.0,
+                    trust_score=100.0 if is_super else 20.0,
+                    romantic_attachment=100.0 if is_super else 0.0,
+                    respect_dominance=50.0 if is_super else 0.0,
+                    relationship_tier="EXCLUSIVE_PARTNER" if is_super else "STRANGER",
+                    role="SUPER_ADMIN" if is_super else "MEMBER",
+                    created_at=datetime.utcnow(),
+                    last_interaction_at=datetime.utcnow(),
+                )
+                self.session.add(user)
+                try:
+                    await self.session.flush()
+                    logger.info(f"Registered new User [tg_id={telegram_id}, name={first_name}] into Unified Profile.")
+                except IntegrityError:
+                    await self.session.rollback()
+                    existing = await self.get_by_telegram_id(telegram_id)
+                    if existing is not None:
+                        return existing
+                    logger.debug(f"Handled IntegrityError gracefully for tg_id={telegram_id}")
+                except Exception as exc:
+                    await self.session.rollback()
+                    existing = await self.get_by_telegram_id(telegram_id)
+                    if existing is not None:
+                        return existing
+                    logger.debug(f"User conflict safely recovered for tg_id={telegram_id}: {exc}")
+            else:
+                # Refresh last active time and name metadata if changed
+                from aether_human_core.config.settings import settings
+                is_super = telegram_id in settings.super_admin_ids_list
+                updated = False
+                if is_super:
+                    user.role = "SUPER_ADMIN"
+                    user.affinity_score = 100.0
+                    user.trust_score = 100.0
+                    user.respect_dominance = 50.0
+                    user.relationship_tier = "EXCLUSIVE_PARTNER"
+                    updated = True
+                if first_name and user.first_name != first_name:
+                    user.first_name = first_name
+                    updated = True
+                if last_name and user.last_name != last_name:
+                    user.last_name = last_name
+                    updated = True
+                if username and user.username != username:
+                    user.username = username
+                    updated = True
+                user.last_interaction_at = datetime.utcnow()
+                if updated:
+                    await self.session.flush()
+            _user_ttl_cache[telegram_id] = (time.time(), user)
+            return user
 
     async def update_gender(self, telegram_id: int, gender: str) -> Optional[UserModel]:
         user = await self.get_by_telegram_id(telegram_id)
@@ -83,6 +129,7 @@ class UserRepository:
             user.gender = gender
             user.updated_at = datetime.utcnow()
             await self.session.flush()
+            _user_ttl_cache[telegram_id] = (time.time(), user)
             logger.info(f"Updated gender for user [{telegram_id}] to '{gender}'.")
         return user
 
@@ -92,6 +139,7 @@ class UserRepository:
             user.notes = notes
             user.updated_at = datetime.utcnow()
             await self.session.flush()
+            _user_ttl_cache[telegram_id] = (time.time(), user)
             logger.info(f"Updated notes for user [{telegram_id}].")
         return user
 
@@ -121,6 +169,7 @@ class UserRepository:
                 user.relationship_tier = "RIVAL"
             user.updated_at = datetime.utcnow()
             await self.session.flush()
+            _user_ttl_cache[telegram_id] = (time.time(), user)
             logger.info(f"Set role for [{telegram_id}] to '{role_clean}'.")
         return user
 
@@ -136,6 +185,19 @@ class UserRepository:
         if not user:
             raise ValueError(f"User with telegram_id {telegram_id} does not exist.")
 
+        from aether_human_core.config.settings import settings
+        if telegram_id in settings.super_admin_ids_list:
+            # The King / Owner immunity: Permanent maximum affinity, never degrades
+            user.affinity_score = 100.0
+            user.trust_score = 100.0
+            user.respect_dominance = 50.0
+            user.relationship_tier = "EXCLUSIVE_PARTNER"
+            user.role = "SUPER_ADMIN"
+            user.updated_at = datetime.utcnow()
+            await self.session.flush()
+            _user_ttl_cache[telegram_id] = (time.time(), user)
+            return user
+
         # Clamp and update across full negative to positive continuum [-100.0, 100.0]
         user.affinity_score = max(-100.0, min(100.0, user.affinity_score + delta_affinity))
         user.trust_score = max(0.0, min(100.0, user.trust_score + delta_trust))
@@ -148,6 +210,7 @@ class UserRepository:
         )
         user.updated_at = datetime.utcnow()
         await self.session.flush()
+        _user_ttl_cache[telegram_id] = (time.time(), user)
 
         logger.debug(
             f"Updated affinity for [{user.telegram_id}]: "

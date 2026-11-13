@@ -1,0 +1,131 @@
+{
+  "omar": [
+    {
+      "expression": "candid mid-laugh, genuine spontaneous amusement",
+      "camera_angle": "eye-level close portrait selfie resting one elbow on table",
+      "pose": "adjusting collar or hair casually with free hand",
+      "outfit_detail": "dark navy zip-up sweatshirt over white tee",
+      "timestamp": "1793843057"
+    },
+    {
+      "expression": "playful skeptical squint with a teasing half-grin",
+      "camera_angle": "resting head back on gaming chair headrest, casual front-camera angle",
+      "pose": "resting forearm on desk edge in a relaxed everyday posture",
+      "outfit_detail": "olive green casual henley shirt with rolled sleeves",
+      "timestamp": "1793882351"
+    },
+    {
+      "expression": "serious focused gaze directly into the front camera lens",
+      "camera_angle": "low-angle casual desk selfie leaning back in chair",
+      "pose": "leaning back casually with one shoulder slightly forward",
+      "outfit_detail": "plain black crew-neck fitted cotton t-shirt",
+      "timestamp": "1793882495"
+    },
+    {
+      "expression": "playful one-sided smirk with confident eye contact",
+      "camera_angle": "close-up front-camera selfie from slightly above eye level",
+      "pose": "leaning slightly closer to the front camera lens",
+      "outfit_detail": "casual unbuttoned dark plaid overshirt over plain tee",
+      "timestamp": "1793889437"
+    },
+    {
+      "expression": "calm unbothered expression glancing at the smartphone screen",
+      "camera_angle": "slightly tilted Dutch-angle casual handheld snap",
+      "pose": "sitting sideways at the desk turning head toward the camera",
+      "outfit_detail": "black streetwear track jacket unzipped over dark tee",
+      "timestamp": "1793984521"
+    }
+  ],
+  "gg": [
+    {
+      "expression": "calm unbothered expression glancing at the smartphone screen",
+      "camera_angle": "slight three-quarter side-angle front-camera selfie",
+      "pose": "adjusting collar or hair casually with free hand",
+      "outfit_detail": "cozy oversized cream-white knit sweater",
+      "timestamp": "1793843058"
+    }
+  ],
+  "malooka": [
+    {
+      "expression": "candid mid-laugh, genuine spontaneous amusement",
+      "camera_angle": "resting head back on gaming chair headrest, casual front-camera angle",
+      "pose": "sitting sideways at the desk turning head toward the camera",
+      "outfit_detail": "casual sage-green ribbed long-sleeve top",
+      "timestamp": "1793882731"
+    },
+    {
+      "expression": "serious focused gaze directly into the front camera lens",
+      "camera_angle": "mirror selfie showing smartphone held in hand at chest level",
+      "pose": "resting forearm on desk edge in a relaxed everyday posture",
+      "outfit_detail": "warm beige cable-knit home pullover",
+      "timestamp": "1793882755"
+    },
+    {
+      "expression": "calm unbothered expression glancing at the smartphone screen",
+      "camera_angle": "eye-level close portrait selfie resting one elbow on table",
+      "pose": "resting cheek lightly against knuckles of one hand",
+      "outfit_detail": "casual burgundy cotton off-shoulder home top",
+      "timestamp": "1793882810"
+    },
+    {
+      "expression": "biting lower lip slightly in a candid thinking expression",
+      "camera_angle": "slight three-quarter side-angle front-camera selfie",
+      "pose": "holding phone with one hand while relaxing shoulders",
+      "outfit_detail": "stylish sky-blue relaxed button-down linen shirt",
+      "timestamp": "1793882843"
+    },
+    {
+      "expression": "sipping coffee or tea from a ceramic mug mid-shot",
+      "camera_angle": "off-center candid framing, one-handed arm-extended front selfie",
+      "pose": "leaning back casually with one shoulder slightly forward",
+      "outfit_detail": "soft dusty-rose oversized cotton hoodie",
+      "timestamp": "1793883207"
+    }
+  ],
+  "maryam": [
+    {
+      "expression": "raised eyebrow questioning look, candid curiosity",
+      "camera_angle": "off-center candid framing, one-handed arm-extended front selfie",
+      "pose": "resting cheek lightly against knuckles of one hand",
+      "outfit_detail": "warm beige cable-knit home pullover",
+      "timestamp": "1793882961"
+    },
+    {
+      "expression": "looking slightly away from the lens as if caught mid-thought",
+      "camera_angle": "eye-level close portrait selfie resting one elbow on table",
+      "pose": "sitting sideways at the desk turning head toward the camera",
+      "outfit_detail": "casual burgundy cotton off-shoulder home top",
+      "timestamp": "1793882990"
+    },
+    {
+      "expression": "sleepy late-night eyes, relaxed chill expression",
+      "camera_angle": "close-up front-camera selfie from slightly above eye level",
+      "pose": "leaning back casually with one shoulder slightly forward",
+      "outfit_detail": "chic pastel lavender casual cardigan over white top",
+      "timestamp": "1793883017"
+    },
+    {
+      "expression": "resting chin on hand looking slightly bored and chill",
+      "camera_angle": "mirror selfie showing smartphone held in hand at chest level",
+      "pose": "leaning slightly closer to the front camera lens",
+      "outfit_detail": "casual sage-green ribbed long-sleeve top",
+      "timestamp": "1793883051"
+    },
+    {
+      "expression": "subtle tired half-smile with relaxed natural eyes",
+      "camera_angle": "resting head back on gaming chair headrest, casual front-camera angle",
+      "pose": "slouching comfortably with a relaxed candid posture",
+      "outfit_detail": "cozy oversized cream-white knit sweater",
+      "timestamp": "1793933511"
+    }
+  ],
+  "masa": [
+    {
+      "expression": "candid mid-laugh, genuine spontaneous amusement",
+      "camera_angle": "slightly tilted Dutch-angle casual handheld snap",
+      "pose": "sitting sideways at the desk turning head toward the camera",
+      "outfit_detail": "casual sage-green ribbed long-sleeve top",
+      "timestamp": "1793993176"
+    }
+  ]
+}

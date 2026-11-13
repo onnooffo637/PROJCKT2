@@ -34,7 +34,7 @@ class VirtualLifeSimulator:
     LOCATIONS = {
         "BEDROOM": PhysicalLifeState(
             location_id="BEDROOM",
-            location_name_ar="في أوضتي في المعادي",
+            location_name_ar="في أوضتي في القاهرة",
             location_description="cozy Cairo bedroom, warm ambient desk lamp, coding setup in background, unmade bed",
             current_outfit="casual oversized grey hoodie, comfortable home t-shirt",
             current_activity="قاعد على السرير بالمشروب بتاعي أو بقلب في الموبايل",
@@ -58,8 +58,8 @@ class VirtualLifeSimulator:
         ),
         "CAFE": PhysicalLifeState(
             location_id="CAFE",
-            location_name_ar="في كافيه رايق في المعادي",
-            location_description="outdoor bohemian Maadi cafe, green trees, wooden rustic table, iced coffee glass",
+            location_name_ar="في كافيه رايق في القاهرة",
+            location_description="outdoor bohemian Cairo cafe, green trees, wooden rustic table, iced coffee glass",
             current_outfit="olive green linen shirt, silver neck chain",
             current_activity="قاعد بشرب آيس لاتيه مع شوية شغل خفيف",
             ambient_sound_type="cafe_ambiance",
@@ -101,28 +101,23 @@ class VirtualLifeSimulator:
     ) -> Tuple[bool, str]:
         """
         Evaluates whether Omar agrees to send a live photo to the requester.
-        Strangers and low-trust users are rejected with dignity.
+        The King is always honored; villains are rejected; friendly users are accommodated warmly.
         """
-        # Dignity rejection for strangers or antagonists
-        if user_vector.tier in (RelationshipTier.ANTAGONIST, RelationshipTier.STRANGER):
-            rejection_text = (
-                f"أبعتلك صورتي بمناسبة إيه يعني؟ أنت مين أصلاً وتعرفني منين عشان تطلب كدا؟"
-            )
-            logger.info(f"Photo request REJECTED for stranger [{user_vector.user_id}].")
+        from aether_human_core.config.settings import settings
+        if user_vector.user_id in settings.super_admin_ids_list:
+            return True, f"أمرك يا زيرو يا أخويا الكبير، أحلى صورة لعيونك فوراً وأنا {cls.get_current_location_state().location_name_ar} 😉📸"
+
+        # Dignity rejection for explicit villains and antagonists
+        if user_vector.tier in (RelationshipTier.ANTAGONIST, RelationshipTier.VILLAIN) or user_vector.affinity_score < 0:
+            rejection_text = f"مش هبعت صوري يا {user_name}، ركز في كلامك وسيبك من الصور."
+            logger.info(f"Photo request REJECTED for villain [{user_vector.user_id}].")
             return False, rejection_text
 
-        if user_vector.trust_score < 40.0:
-            rejection_text = (
-                f"مش ببعت صوري لأي حد لسه معرفوش كويس.. لما ناخد على بعض أكتر نبقى نشوف الموضوع ده."
-            )
-            logger.info(f"Photo request REJECTED for low-trust user [{user_vector.user_id}].")
-            return False, rejection_text
-
-        # Approved for trusted friends or romantic partner
+        # Approved for users
         acceptance_text = (
-            f"عيوني، هصورلك نفسي حالا وأنا {cls.get_current_location_state().location_name_ar} ثانية واحدة 😉"
-            if user_vector.romantic_attachment >= 40.0
-            else f"ماشي يا غالي، دقيقة ألقطلك صورة وأنا {cls.get_current_location_state().location_name_ar}."
+            f"عيوني يا غالي، هصورلك نفسي حالا وأنا {cls.get_current_location_state().location_name_ar} ثانية واحدة 😉"
+            if user_vector.romantic_attachment >= 40.0 or user_vector.affinity_score >= 20.0
+            else f"ماشي يا طيب، دقيقة ألقطلك صورة سريعة وأنا {cls.get_current_location_state().location_name_ar}."
         )
         return True, acceptance_text
 

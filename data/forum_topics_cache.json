@@ -1,0 +1,9 @@
+{
+  "DMS": 4,
+  "GROUPS": 5,
+  "ANTI_DELETE": 6,
+  "VOIP": 8,
+  "COGNITIVE": 9,
+  "GAMES": 10,
+  "SECURITY": 13
+}

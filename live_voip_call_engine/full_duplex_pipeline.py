@@ -1,0 +1,2245 @@
+"""
+
+Full-Duplex VoIP Audio Pipeline & Live Audio Bridge (Project Aether-Human V5.0)
+
+Manages genuine real-time phone conversations:
+
+- Live VoIP call acceptance & bidirectional conversational loop
+
+- Real-time TTS audio generation and streaming directly over Telegram UDP reflectors
+
+- Backchanneling cues ("أها..", "ممم..", "سامعك يا صاحبي") while listening
+
+- Barge-in handling (pauses speaking when user interrupts)
+
+- Strict validation: CALL_ANSWERED_DUPLEX is ONLY broadcast when live audio stream opens successfully
+
+"""
+
+
+
+from __future__ import annotations
+
+
+
+import asyncio
+
+import logging
+
+import os
+import re
+
+import random
+
+import socket
+
+import subprocess
+
+import time
+
+import wave
+
+from typing import AsyncGenerator, Dict, List, Optional, Any
+
+from pydantic import BaseModel, Field
+
+
+
+logger = logging.getLogger("Aether.VoIP.FullDuplex")
+
+
+
+
+
+def extract_ogg_opus_frames(data: bytes) -> List[bytes]:
+
+    """
+
+    Extracts individual 20ms raw Opus audio packets from an OGG Opus container.
+
+    Skips Ogg container headers, OpusHead (page 0), and OpusTags (page 1).
+
+    """
+
+    frames: List[bytes] = []
+
+    idx = 0
+
+    page_num = 0
+
+    while idx < len(data):
+
+        if data[idx:idx+4] != b'OggS':
+
+            break
+
+        if len(data) < idx + 27:
+
+            break
+
+        num_segments = data[idx + 26]
+
+        seg_table = data[idx + 27 : idx + 27 + num_segments]
+
+        body_start = idx + 27 + num_segments
+
+        body_offset = 0
+
+        current_packet = bytearray()
+
+        for seg_len in seg_table:
+
+            current_packet.extend(data[body_start + body_offset : body_start + body_offset + seg_len])
+
+            body_offset += seg_len
+
+            if seg_len < 255:
+
+                pkt = bytes(current_packet)
+
+                if page_num >= 2:
+
+                    if not pkt.startswith(b'OpusHead') and not pkt.startswith(b'OpusTags'):
+
+                        frames.append(pkt)
+
+                current_packet.clear()
+
+        idx = body_start + body_offset
+
+        page_num += 1
+
+    return frames
+
+
+
+
+
+def load_persona_greeting_frames(gender: str = "female") -> List[bytes]:
+    """Loads and caches authentic 20ms Opus frames for instant VoIP greeting playback matching gender."""
+    filename = "call_greeting_female.ogg" if gender.lower() == "female" else "call_greeting_male.ogg"
+    greeting_file = os.path.join(os.getcwd(), "artifacts", "voice_notes", filename)
+    if not os.path.exists(greeting_file):
+        greeting_file = os.path.join(os.getcwd(), "artifacts", "voice_notes", "default_call_greeting.ogg")
+
+    if os.path.exists(greeting_file):
+        try:
+            with open(greeting_file, "rb") as gf:
+                data = gf.read()
+            frames = extract_ogg_opus_frames(data)
+            if frames:
+                logger.info(f"Loaded {len(frames)} pre-cached 20ms Opus frames ({gender}) from {greeting_file}")
+                return frames
+        except Exception as e:
+            logger.warning(f"Error loading pre-cached greeting ({gender}): {e}")
+    return []
+
+def load_default_greeting_frames() -> List[bytes]:
+    return load_persona_greeting_frames("female")
+
+def serialize_decrypted_data_block(
+
+    auth_key: bytes,
+
+    opus_frame: bytes,
+
+    out_seq_no: int,
+
+    in_seq_no: int = 0,
+
+    recent_mask: int = 0,
+
+    proto_version: int = 1,
+
+) -> bytes:
+
+    """
+
+    Serializes authentic Telegram VoIP decryptedDataBlock#dbf948c1 TL structure:
+
+    decryptedDataBlock#dbf948c1 random_id:long random_bytes:string flags:#
+
+        voice_call_id:flags.2?int128 in_seq_no:flags.4?int out_seq_no:flags.4?int
+
+        recent_received_mask:flags.5?int proto:flags.3?int extra:flags.1?string
+
+        raw_data:flags.0?string = DecryptedDataBlock;
+
+    Mandatory voice_call_id & proto parameters allow Telegram client to transition
+
+    from 'Connecting...' to active call (00:01) immediately!
+
+    """
+
+    from telethon.tl.tlobject import TLObject
+
+    import hashlib
+
+    import struct
+
+    import os
+
+
+
+    constructor = struct.pack("<I", 0xdbf948c1)
+
+    random_id = os.urandom(8)
+
+    random_bytes = TLObject.serialize_bytes(b"")
+
+
+
+    # Flags: bit 0 (raw_data), bit 2 (voice_call_id), bit 3 (proto), bit 4 (seq_nos), bit 5 (recent_mask)
+
+    flags = 61
+
+    flags_bytes = struct.pack("<I", flags)
+
+
+
+    # voice_call_id: lower 128 bits of SHA256(auth_key) -> bytes 16:32 in digest
+
+    voice_call_id = hashlib.sha256(auth_key).digest()[16:32]
+
+
+
+    in_seq_bytes = struct.pack("<I", in_seq_no)
+
+    out_seq_bytes = struct.pack("<I", out_seq_no)
+
+    recent_mask_bytes = struct.pack("<I", recent_mask if in_seq_no > 0 else 0)
+
+    proto_bytes = struct.pack("<I", proto_version)
+
+    raw_data_bytes = TLObject.serialize_bytes(opus_frame)
+
+
+
+    return (
+
+        constructor
+
+        + random_id
+
+        + random_bytes
+
+        + flags_bytes
+
+        + voice_call_id
+
+        + in_seq_bytes
+
+        + out_seq_bytes
+
+        + recent_mask_bytes
+
+        + proto_bytes
+
+        + raw_data_bytes
+
+    )
+
+
+
+
+
+def build_voip_packet(
+
+    auth_key: Optional[bytes],
+
+    peer_tag: bytes,
+
+    opus_frame: bytes,
+
+    seq_no: int,
+
+    in_seq_no: int = 0,
+
+) -> bytes:
+
+    """
+
+    Constructs and encrypts a 100% compliant Telegram VoIP audio packet for reflector relay.
+
+    Follows MTProto 2.0 AES-256-IGE specification for VoIP calls (version 7.0+):
+
+    - Encapsulates payload in decryptedDataBlock#dbf948c1 TL structure
+
+    - Callee-to-Caller direction offset x = 8
+
+    - msg_key = SHA256(auth_key[88+x : 88+x+32] + payload + padding)[8:24]
+
+    - AES-256-IGE encryption via telethon.crypto.AES
+
+    - Prepends 16-byte peer_tag and 16-byte msg_key
+
+    """
+
+    import hashlib
+
+    import os
+
+    import struct
+
+    from telethon.crypto import AES
+
+
+
+    if not auth_key or len(auth_key) < 256:
+
+        payload = struct.pack("<IB", seq_no, 0x01) + opus_frame
+
+        return peer_tag + payload
+
+
+
+    plain_data = serialize_decrypted_data_block(
+
+        auth_key=auth_key,
+
+        opus_frame=opus_frame,
+
+        out_seq_no=seq_no,
+
+        in_seq_no=in_seq_no,
+
+    )
+
+
+
+    pad_len = (16 - ((len(plain_data) + 12) % 16)) + 12
+
+    padding = os.urandom(pad_len)
+
+
+
+    # x = 8 for Callee to Caller
+
+    x = 8
+
+    msg_key_large = hashlib.sha256(
+
+        auth_key[88 + x : 88 + x + 32] + plain_data + padding
+
+    ).digest()
+
+    msg_key = msg_key_large[8:24]
+
+
+
+    sha256_a = hashlib.sha256(msg_key + auth_key[x : x + 36]).digest()
+
+    sha256_b = hashlib.sha256(auth_key[x + 40 : x + 76] + msg_key).digest()
+
+
+
+    aes_key = sha256_a[:8] + sha256_b[8:24] + sha256_a[24:32]
+
+    aes_iv = sha256_b[:8] + sha256_a[8:24] + sha256_b[24:32]
+
+
+
+    encrypted = AES.encrypt_ige(plain_data + padding, aes_key, aes_iv)
+
+    return peer_tag + msg_key + encrypted
+
+
+
+
+
+class ActiveVoIPSession(BaseModel):
+
+    model_config = {"arbitrary_types_allowed": True}
+
+
+
+    call_id: int
+
+    caller_id: int
+
+    caller_name: str
+
+    bot_name: str
+
+    start_time: float = Field(default_factory=time.time)
+
+    duration_sec: float = 0.0
+
+    is_active: bool = True
+
+    is_stream_open: bool = False
+
+    greeting_sent: bool = False
+
+    turns_count: int = 0
+
+    reflector_ip: Optional[str] = None
+
+    reflector_port: Optional[int] = None
+
+    reflector_endpoints: List[Dict[str, Any]] = Field(default_factory=list)
+
+    active_endpoint: Optional[Any] = None
+
+    peer: Optional[Any] = None
+
+    last_received_seq: int = 0
+
+    out_seq_counter: int = 0
+
+    b_int: int = 0
+
+    p: int = 0
+
+    g: int = 3
+
+    auth_key: Optional[bytes] = None
+
+    # Full Duplex Conversational State
+    user_audio_buffer: bytearray = Field(default_factory=bytearray)
+    is_user_talking: bool = False
+    is_bot_speaking: bool = False
+    bot_speech_start_time: float = 0.0
+    barge_in_consecutive_frames: int = 0
+    last_user_voice_time: float = 0.0
+    speech_frames_count: int = 0
+    processing_turn: bool = False
+    last_vad_debug_time: float = 0.0
+    current_turn_task: Optional[Any] = None
+    merged_transcript_prefix: str = ""
+
+
+
+
+
+class FullDuplexAudioPipeline:
+
+    """
+
+    Manages conversational turn-taking, barge-in detection, vocal backchanneling,
+
+    and active VoIP duplex audio streaming over Telegram reflector infrastructure.
+
+    """
+
+
+
+    BACKCHANNEL_FILLERS = [
+
+        "أها..",
+
+        "ممم..",
+
+        "سامعك يا صاحبي..",
+
+        "أيوة معاك..",
+
+        "تمام كمل..",
+
+        "فاهم قصدك..",
+
+        "والله؟..",
+
+        "يا ساتر..",
+
+    ]
+
+
+
+    NIGHT_WHISPER_FILLERS = [
+
+        "أها.. (بصوت واطي)",
+
+        "ممم.. سامعك براحة..",
+
+        "أيوه معاك.. وطيت صوتي عشان مفيش حد يصحى..",
+
+    ]
+
+
+
+    def __init__(self):
+
+        self.is_speaking = False
+
+        self.is_user_speaking = False
+
+        self.interrupted = False
+
+        self._active_sessions: Dict[int, ActiveVoIPSession] = {}
+
+        self._udp_sockets: Dict[int, socket.socket] = {}
+
+        self._stream_tasks: Dict[int, asyncio.Task] = {}
+
+        self._receiver_tasks: Dict[int, asyncio.Task] = {}
+
+        self._client_instances: Dict[int, Any] = {}
+
+        self._persona_greeting_cache: Dict[str, List[bytes]] = {
+            "female": load_persona_greeting_frames("female"),
+            "male": load_persona_greeting_frames("male"),
+        }
+        self._cached_greeting_frames: List[bytes] = self._persona_greeting_cache.get("female", [])
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ntgcalls: Optional[Any] = None
+
+        try:
+            import ntgcalls
+            self._ntgcalls = ntgcalls.NTgCalls()
+            self._ntgcalls.on_signaling_data(self._on_ntg_signaling_data)
+            self._ntgcalls.on_connection_change(self._on_ntg_connection_change)
+            self._ntgcalls.on_frames(self._on_ntg_incoming_frames)
+            self._ntgcalls.on_stream_end(self._on_ntg_stream_end)
+            logger.info("🚀 [VoIP Engine] Native WebRTC tgcalls (ntgcalls) core initialized with signaling/media handlers.")
+        except Exception as ntg_err:
+            logger.warning(f"ntgcalls initialization notice: {ntg_err}")
+            self._ntgcalls = None
+
+    def _get_active_loop(self, client: Optional[Any] = None) -> Optional[asyncio.AbstractEventLoop]:
+        """
+        Resolves an actively running asyncio event loop, prioritizing the engine's main loop.
+        Guarantees that threadsafe callbacks dispatched from C++ ntgcalls worker threads
+        are safely scheduled without dropping on inactive/stopped loop references.
+        """
+        candidates: List[Any] = []
+        if self._main_loop:
+            candidates.append(self._main_loop)
+        if client:
+            c_loop = getattr(client, "loop", None)
+            if c_loop:
+                candidates.append(c_loop)
+            c_under_loop = getattr(client, "_loop", None)
+            if c_under_loop:
+                candidates.append(c_under_loop)
+
+        for loop in candidates:
+            if loop and hasattr(loop, "is_running") and loop.is_running():
+                return loop
+
+        try:
+            cur_loop = asyncio.get_running_loop()
+            if cur_loop and cur_loop.is_running():
+                self._main_loop = cur_loop
+                return cur_loop
+        except RuntimeError:
+            pass
+
+        return None
+
+    def _on_ntg_signaling_data(self, call_id: int, data: bytes) -> None:
+        """Invoked by ntgcalls C++ core when outbound signaling (SDP answer, ICE candidates) is produced."""
+        logger.info(f"📡 [NTgCalls Outbound Signaling] Generated {len(data)} bytes for Call [{call_id}]")
+        session = self._active_sessions.get(call_id)
+        client = self._client_instances.get(call_id)
+        if not session or not client or not session.peer:
+            logger.warning(f"Cannot dispatch outbound signaling: session/client/peer missing for [{call_id}]")
+            return
+
+        target_loop = self._get_active_loop(client)
+        if target_loop:
+            asyncio.run_coroutine_threadsafe(
+                self._dispatch_outbound_signaling(client, session.peer, call_id, data),
+                target_loop,
+            )
+        else:
+            logger.error(
+                f"Cannot dispatch outbound signaling for Call [{call_id}]: no running loop found "
+                f"(main_loop={self._main_loop}, client_loop={getattr(client, 'loop', None)})"
+            )
+
+    async def _dispatch_outbound_signaling(self, client: Any, peer: Any, call_id: int, data: bytes) -> None:
+        from telethon import functions
+        try:
+            await client(functions.phone.SendSignalingDataRequest(peer=peer, data=data))
+            logger.info(f"📡 [MTProto Signaling] Dispatched {len(data)} bytes SendSignalingDataRequest for Call [{call_id}]")
+        except Exception as ex:
+            logger.error(f"Error dispatching SendSignalingDataRequest for Call [{call_id}]: {ex}", exc_info=True)
+
+    def _on_ntg_connection_change(self, call_id: int, conn_info: Any) -> None:
+        import ntgcalls
+        state = getattr(conn_info, "state", None)
+        logger.info(f"🌐 [NTgCalls Connection] Call [{call_id}] State changed to: {state}")
+        if state == ntgcalls.ConnectionState.CONNECTED:
+            session = self._active_sessions.get(call_id)
+            client = self._client_instances.get(call_id)
+            if session:
+                session.is_stream_open = True
+                session.is_active = True
+                logger.info(f"🎉🎉 [VoIP ACTIVE CALL 00:01] Live bidirectional media stream established for Call [{call_id}] with [{session.caller_name}]!")
+                target_loop = self._get_active_loop(client)
+                if target_loop:
+                    from admin_telemetry_and_archiver.live_event_streamer import live_event_streamer
+                    asyncio.run_coroutine_threadsafe(
+                        live_event_streamer.stream_voip_event(
+                            caller_name=session.caller_name,
+                            caller_id=session.caller_id,
+                            call_type="AUDIO_CALL_LIVE",
+                            action="CALL_ANSWERED_DUPLEX",
+                            summary=f"تم الاتصال الحي بنجاح (Connected 00:01) وبث الترحيب الفوري مع {session.bot_name}!",
+                        ),
+                        target_loop,
+                    )
+        elif state in (ntgcalls.ConnectionState.CLOSED, ntgcalls.ConnectionState.FAILED, ntgcalls.ConnectionState.TIMEOUT):
+            logger.info(f"📞 [NTgCalls Connection] Call [{call_id}] state: {state}")
+            session = self._active_sessions.get(call_id)
+            if session:
+                session.is_active = False
+                session.is_stream_open = False
+                session.user_audio_buffer.clear()
+
+    def _on_ntg_stream_end(self, call_id: int, stream_type: Any, device: Any) -> None:
+        import ntgcalls
+        logger.info(f"🔈 [NTgCalls Stream End] Call [{call_id}] stream finished on device: {device}")
+        session = self._active_sessions.get(call_id)
+        if session and (device == ntgcalls.StreamDevice.MICROPHONE or "MICROPHONE" in str(device)):
+            session.is_bot_speaking = False
+            session.barge_in_consecutive_frames = 0
+            logger.info(f"🎧 [VoIP Ready to Listen] Bot finished speaking for Call [{call_id}]. Listening for caller speech...")
+
+    def _on_ntg_incoming_frames(self, call_id: int, mode: Any, device: Any, frames: Any) -> None:
+        if not frames:
+            return
+
+        import ntgcalls
+        # Only accept incoming remote caller audio (StreamMode.PLAYBACK). Never loop back local outbound audio!
+        if mode != ntgcalls.StreamMode.PLAYBACK:
+            return
+
+        session = self._active_sessions.get(call_id)
+        if not session or not session.is_active:
+            return
+
+        # Concatenate PCM frame bytes from caller
+        frame_bytes = bytearray()
+        for frame in frames:
+            if hasattr(frame, "data") and frame.data:
+                d = frame.data
+                if isinstance(d, (bytes, bytearray, memoryview)):
+                    frame_bytes.extend(d)
+                else:
+                    frame_bytes.extend(bytes(d))
+
+        if not frame_bytes:
+            return
+
+        # Ensure 16-bit alignment (even number of bytes)
+        rem = len(frame_bytes) % 2
+        if rem != 0:
+            frame_bytes = frame_bytes[:-rem]
+        if not frame_bytes:
+            return
+
+        import numpy as np
+        samples = np.frombuffer(frame_bytes, dtype=np.int16)
+        if len(samples) == 0:
+            return
+
+        max_amp = int(np.max(np.abs(samples)))
+        rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
+        now = time.time()
+
+        # ----------------------------------------------------------------------
+        # Case A: Bot is currently speaking (Outbound playback active)
+        # ----------------------------------------------------------------------
+        if session.is_bot_speaking:
+            # During bot speech:
+            # Acoustic leakage/echo from the phone speaker typically yields RMS 150-350, Amp 400-1200.
+            # To genuinely interrupt (Barge-In), the user must speak directly into the phone (RMS >= 750 or Amp >= 2200).
+            # We enforce:
+            # 1. Grace Period: Ignore barge-in during the first 1.2s of playback to prevent startup acoustic pops from cutting off the bot.
+            # 2. Consecutive Frames Hysteresis: Require at least 7 consecutive speech frames (~140ms of sustained speech)
+            #    so that momentary echo bursts or line noises do NOT trigger a false interruption.
+            is_loud_barge = (rms >= 750 or max_amp >= 2200)
+            since_speech_start = now - getattr(session, "bot_speech_start_time", 0.0)
+
+            if is_loud_barge and since_speech_start >= 1.2:
+                session.barge_in_consecutive_frames += 1
+                if session.barge_in_consecutive_frames >= 7:
+                    # Confirmed intentional human barge-in!
+                    session.is_bot_speaking = False
+                    session.barge_in_consecutive_frames = 0
+                    logger.info(
+                        f"⚡ [VoIP Confirmed Barge-In] Caller actively interrupting "
+                        f"(RMS={rms:.0f}, Amp={max_amp}, frames={session.barge_in_consecutive_frames})! "
+                        f"Halting bot audio."
+                    )
+                    client = self._client_instances.get(call_id)
+                    target_loop = self._get_active_loop(client)
+                    if target_loop:
+                        asyncio.run_coroutine_threadsafe(self._stop_bot_playback(call_id), target_loop)
+
+                    # Begin capturing the caller's interrupting utterance
+                    session.user_audio_buffer.clear()
+                    session.user_audio_buffer.extend(frame_bytes)
+                    session.last_user_voice_time = now
+                    session.is_user_talking = True
+                    session.speech_frames_count = 1
+            else:
+                session.barge_in_consecutive_frames = 0
+
+            # CRITICAL: While bot is speaking and not barged-in, do NOT accumulate speaker echo into user_audio_buffer!
+            return
+
+        # ----------------------------------------------------------------------
+        # Case B: Bot is silent / listening for caller speech
+        # ----------------------------------------------------------------------
+        # VAD Speech Detection Threshold:
+        # WebRTC audio from phone: room silence is RMS < 100, Amp < 300.
+        # Audible human speech into phone: RMS >= 135 or max_amp >= 380.
+        is_speech = (rms >= 135 or max_amp >= 380)
+
+        # Periodic debug telemetry every 3 seconds to verify audio flow
+        if now - getattr(session, "last_vad_debug_time", 0) >= 3.0:
+            session.last_vad_debug_time = now
+            logger.info(
+                f"🎙️ [VoIP Inbound Frame] Call [{call_id}] dev={device} "
+                f"RMS={rms:.0f}, Amp={max_amp}, speech={is_speech}, "
+                f"buf={len(session.user_audio_buffer)}B, bot_talking={session.is_bot_speaking}"
+            )
+
+        if is_speech:
+            session.user_audio_buffer.extend(frame_bytes)
+            session.last_user_voice_time = now
+            session.is_user_talking = True
+            session.speech_frames_count += 1
+
+        elif session.is_user_talking:
+            # Low energy tail during speech (short pause between syllables or words)
+            if now - session.last_user_voice_time < 0.45:
+                session.user_audio_buffer.extend(frame_bytes)
+
+            silence_duration = now - session.last_user_voice_time
+            buffer_len = len(session.user_audio_buffer)
+
+            # Responsive silence detection: If caller stopped talking for >= 0.55s
+            # Require at least 40,000 bytes (~0.21s) AND at least 4 speech frames (~80ms of active phonemes)
+            # to capture quick conversational words ("ألو", "أيوه", "تمام") instantly!
+            if silence_duration >= 0.55:
+                # Task B3.g: If caller speaks again while a turn is still processing, cancel in-flight turn
+                if buffer_len >= 40000 and session.speech_frames_count >= 4:
+                    if session.current_turn_task and not session.current_turn_task.done():
+                        session.current_turn_task.cancel()
+                        logger.info(f"🛑 [VoIP Barge-in Cancel] In-flight turn task cancelled for Call [{call_id}] due to fresh caller speech.")
+                        client = self._client_instances.get(call_id)
+                        target_loop = self._get_active_loop(client)
+                        if target_loop:
+                            asyncio.run_coroutine_threadsafe(self._stop_bot_playback(call_id), target_loop)
+
+                    session.is_user_talking = False
+                    session.processing_turn = True
+                    audio_payload = bytes(session.user_audio_buffer)
+                    frames_cnt = session.speech_frames_count
+                    session.user_audio_buffer.clear()
+                    session.speech_frames_count = 0
+
+                    logger.info(
+                        f"🎤 [VoIP Utterance Detected] Captured {len(audio_payload)} bytes "
+                        f"({len(audio_payload)/192000:.1f}s, {frames_cnt} speech frames) "
+                        f"from [{session.caller_name}]. Processing conversational turn..."
+                    )
+                    client = self._client_instances.get(call_id)
+                    target_loop = self._get_active_loop(client)
+                    if target_loop:
+                        asyncio.run_coroutine_threadsafe(
+                            self._process_call_turn(call_id, audio_payload),
+                            target_loop,
+                        )
+                    else:
+                        session.processing_turn = False
+                elif silence_duration >= 1.2:
+                    # Stale or tiny noise burst (<0.2s): discard safely without calling STT
+                    session.is_user_talking = False
+                    session.user_audio_buffer.clear()
+                    session.speech_frames_count = 0
+
+    async def _stop_bot_playback(self, call_id: int) -> None:
+        """Immediately halts outbound bot audio playback upon user barge-in."""
+        if not self._ntgcalls:
+            return
+        try:
+            silence_path = os.path.abspath(os.path.join(os.getcwd(), "artifacts", "voice_notes", "silence.raw"))
+            if not os.path.exists(silence_path) or os.path.getsize(silence_path) == 0:
+                os.makedirs(os.path.dirname(silence_path), exist_ok=True)
+                with open(silence_path, "wb") as f:
+                    f.write(b"\x00" * 3840)
+            import ntgcalls
+            audio_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.FILE, 48000, 2, silence_path, False)
+            speaker_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.EXTERNAL, 48000, 2, "", True)
+            media_desc = ntgcalls.MediaDescription(microphone=audio_desc, speaker=speaker_desc, camera=None, screen=None)
+            await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.CAPTURE, media_desc)
+            session = self._active_sessions.get(call_id)
+            if session:
+                session.is_bot_speaking = False
+                session.barge_in_consecutive_frames = 0
+        except Exception as ex:
+            logger.debug(f"Error stopping bot playback: {ex}")
+
+    async def _process_call_turn(self, call_id: int, audio_payload: bytes) -> None:
+        """
+        Full Duplex Conversational Engine (Task B2 & B3):
+        - Live call latency target: 4-5s typical
+        - Sentence pipelining: sentence 1 synthesized and played immediately
+        - 2.5s pre-rendered filler watchdog
+        - Mandatory timing log: [VOIP TURN TIMING] stt=..s llm=..s tts_first=..s total_to_first_audio=..s
+        """
+        session = self._active_sessions.get(call_id)
+        if not session or not session.is_active:
+            logger.warning(f"Discarding VoIP turn for inactive/missing session [{call_id}]")
+            return
+
+        session.current_turn_task = asyncio.current_task()
+        t_turn_start = time.time()
+
+        try:
+            # 1. Write temporary WAV file
+            os.makedirs(os.path.join(os.getcwd(), "artifacts", "voice_notes"), exist_ok=True)
+            wav_path = os.path.abspath(os.path.join(
+                os.getcwd(), "artifacts", "voice_notes", f"voip_input_{call_id}_{int(time.time()*1000)}.wav"
+            ))
+            with wave.open(wav_path, "wb") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(48000)
+                wf.writeframes(audio_payload)
+
+            # 2. Transcribe with Gemini Multimodal Audio
+            from aether_human_core.multimodal_engine.acoustic_voice.emotion_detector import acoustic_detector
+            analysis = await acoustic_detector.analyze_voice_note(
+                audio_file_path=wav_path,
+                sender_name=session.caller_name,
+            )
+
+            user_transcript = (analysis.transcript or "").strip()
+            try:
+                if os.path.exists(wav_path):
+                    os.remove(wav_path)
+            except Exception:
+                pass
+
+            hallucination_tokens = {"شش", "ش", "هه", "..", "...", "فاطمة", "أعتذر", "شكراً لك"}
+            if not user_transcript or len(user_transcript) < 3 or user_transcript in hallucination_tokens:
+                logger.info(f"VoIP audio from [{session.caller_name}] was noise/hallucination ('{user_transcript}'). Continuing listening.")
+                return
+
+            logger.info(
+                f"🗣️ [VoIP Caller Transcript] [{session.caller_name}]: '{user_transcript}' "
+                f"(Emotion: {analysis.detected_emotion})"
+            )
+
+            session.turns_count += 1
+
+            # 3. Cognitive Orchestration
+            from aether_human_core.cognitive_engine.orchestrator import cognitive_orchestrator
+            from bot_factory.factory_manager import bot_factory
+
+            female_keywords = ["ريمي", "reemy", "ماسه", "ماسة", "ماس", "ملوكة", "ملوكه", "لوكا", "باتو", "نور", "سارة", "ليلى", "هند", "مريم", "female", "بنت", "أنثى"]
+            is_fem = any(f in (session.bot_name or "").lower() for f in female_keywords)
+            target_bot_id = "userbot_primary" if is_fem else "master_omar_official"
+            bot_gender = "female" if is_fem else "male"
+            bot_voice = "ar-EG-SalmaNeural" if is_fem else "ar-EG-ShakirNeural"
+            for b in bot_factory.list_all_bots():
+                if b.name in (session.bot_name or "") or (session.bot_name or "") in b.name or b.instance_id.startswith("userbot_"):
+                    target_bot_id = b.instance_id
+                    g_val = getattr(b, "gender", None)
+                    if g_val and ("female" in str(g_val).lower()):
+                        bot_gender = "female"
+                        bot_voice = "ar-EG-SalmaNeural"
+                    elif g_val and ("male" in str(g_val).lower()) and not is_fem:
+                        bot_gender = "male"
+                        bot_voice = "ar-EG-ShakirNeural"
+                    v_override = getattr(b, "voice_id", None)
+                    if v_override:
+                        bot_voice = v_override
+                    break
+
+            stt_duration = time.time() - t_turn_start
+
+            # Task B3.f: Pre-rendered filler watchdog (plays at 2.5s if LLM still running)
+            async def _filler_watchdog():
+                try:
+                    await asyncio.sleep(2.5)
+                    if not session.is_bot_speaking and session.is_active:
+                        filler_pcm = await self.ensure_pcm_filler(session.bot_name, gender=bot_gender)
+                        if os.path.exists(filler_pcm) and os.path.getsize(filler_pcm) > 3000:
+                            import ntgcalls
+                            audio_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.FILE, 48000, 2, filler_pcm, False)
+                            media_desc = ntgcalls.MediaDescription(microphone=audio_desc, speaker=None, camera=None, screen=None)
+                            if self._ntgcalls:
+                                await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.CAPTURE, media_desc)
+                                logger.info(f"⚡ [VoIP Filler Played] 2.5s threshold reached: played natural voice filler for [{session.caller_name}].")
+                except asyncio.CancelledError:
+                    pass
+                except Exception as fe:
+                    logger.debug(f"Filler error: {fe}")
+
+            filler_task = asyncio.create_task(_filler_watchdog())
+            t_llm_start = time.time()
+
+            try:
+                resp = await cognitive_orchestrator.process_incoming_event(
+                    telegram_message_id=0,
+                    chat_id=session.caller_id,
+                    sender_id=session.caller_id,
+                    sender_name=session.caller_name,
+                    message_text=user_transcript,
+                    media_type="voice",
+                    chat_type="private",
+                    chat_title=f"مكالمة هاتفية مع {session.caller_name}",
+                    target_bot_name=session.bot_name,
+                    target_bot_id=target_bot_id,
+                    is_userbot=True,
+                    is_call_mode=True,
+                )
+            finally:
+                filler_task.cancel()
+
+            llm_duration = time.time() - t_llm_start
+
+            reply_text = (resp.raw_response_text or "").strip()
+            if not reply_text:
+                reply_text = "سامعاك وفاهمك، كمل أنا معاك ومتابعة كل كلامك." if "female" in bot_gender.lower() else "سامعك يا غالي وفاهمك، كمل أنا معاك ومتابعك."
+
+            # Sanitize text for smooth phone speech (strip emojis, markdown, and normalize punctuation)
+            clean_reply_for_voice = re.sub(r"[\U00010000-\U0010ffff]", "", reply_text)
+            clean_reply_for_voice = clean_reply_for_voice.replace(";", "،").replace(",", "،").strip()
+            clean_reply_for_voice = re.sub(r"[،]{2,}", "،", clean_reply_for_voice)
+            clean_reply_for_voice = re.sub(r"\.{2,}", "، ", clean_reply_for_voice)
+            clean_reply_for_voice = re.sub(r"\s*([،.?!])\s*", r"\1 ", clean_reply_for_voice)
+            clean_reply_for_voice = re.sub(r"\s+", " ", clean_reply_for_voice).strip()
+
+            logger.info(f"🎙️ [VoIP Bot Reply Text] Turn #{session.turns_count}: '{clean_reply_for_voice}'")
+
+            # Task B3.e & B2: Synthesize full conversational response for natural, uninterrupted human phone speech
+            t_tts_start = time.time()
+            from aether_human_core.multimodal_engine.acoustic_voice.realistic_voice_generator import synthesize_voice
+            is_sing = (
+                any(k in user_transcript.lower() for k in ["غني", "اغني", "أغني", "موال", "دندني", "طرب", "أغنية", "اغنية"])
+                or any(k in clean_reply_for_voice for k in ["يا مسهرني", "يا ليل", "يا عين", "يا حبيبي", "أغني لك", "أهواك", "حكايتي مع الزمان", "سهرتنا"])
+                or len(clean_reply_for_voice.split()) >= 45
+            )
+            voice_path, _, duration = await synthesize_voice(
+                text=clean_reply_for_voice,
+                persona=session.bot_name,
+                mode="call",
+                gender=bot_gender,
+                is_singing=is_sing,
+            )
+
+            tts_first_duration = time.time() - t_tts_start
+            total_to_first_audio = time.time() - t_turn_start
+
+            # Task B3.a: Mandatory timing log
+            logger.info(
+                f"[VOIP TURN TIMING] stt={stt_duration:.2f}s llm={llm_duration:.2f}s "
+                f"tts_first={tts_first_duration:.2f}s total_to_first_audio={total_to_first_audio:.2f}s duration={duration:.1f}s"
+            )
+
+            if not voice_path or not os.path.exists(voice_path):
+                logger.error("Failed to synthesize voice response for VoIP turn.")
+                return
+
+            # 5. Convert to 48kHz Stereo 16-bit PCM for NTgCalls using FFmpeg (zero Fourier ringing)
+            reply_raw_path = os.path.abspath(os.path.join(
+                os.getcwd(), "artifacts", "voice_notes", f"voip_reply_{call_id}_{int(time.time()*1000)}.raw"
+            ))
+            cmd = [
+                "ffmpeg", "-y", "-i", voice_path,
+                "-ar", "48000", "-ac", "2",
+                "-f", "s16le", reply_raw_path,
+            ]
+            conv = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            await conv.communicate()
+            if not os.path.exists(reply_raw_path) or os.path.getsize(reply_raw_path) < 1000:
+                logger.error(f"FFmpeg failed to convert voice response to raw PCM at {reply_raw_path}")
+                return
+
+            # 6. Stream Outbound Audio to Caller
+            if self._ntgcalls and session.is_active:
+                import ntgcalls
+                audio_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.FILE, 48000, 2, reply_raw_path, False)
+                media_desc = ntgcalls.MediaDescription(microphone=audio_desc, speaker=None, camera=None, screen=None)
+                await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.CAPTURE, media_desc)
+                session.is_bot_speaking = True
+                session.bot_speech_start_time = time.time()
+                session.barge_in_consecutive_frames = 0
+                logger.info(
+                    f"🔊 [VoIP Live Audio Streamed] Playing Turn #{session.turns_count} "
+                    f"({duration:.1f}s) to caller [{session.caller_name}]!"
+                )
+
+                # Safety fallback timer in case on_stream_end callback is delayed
+                async def _safety_reset_speaking(dur: float):
+                    await asyncio.sleep(dur + 0.5)
+                    s = self._active_sessions.get(call_id)
+                    if s and s.is_bot_speaking:
+                        s.is_bot_speaking = False
+                        logger.info(f"⏱️ [VoIP Turn Safety-Reset] Cleared is_bot_speaking after {dur:.1f}s.")
+                asyncio.create_task(_safety_reset_speaking(duration))
+
+                # Telemetry to Observatory
+                from admin_telemetry_and_archiver.live_event_streamer import live_event_streamer
+                asyncio.create_task(
+                    live_event_streamer.stream_dm_event(
+                        sender_id=session.caller_id,
+                        sender_name=session.caller_name,
+                        user_text=f"🎙️ [مكالمة]: {user_transcript}",
+                        bot_reply=f"🗣️ [رد المكالمة]: {reply_text}",
+                        persona_name=f"{session.bot_name} (Live VoIP)",
+                    )
+                )
+
+        except Exception as e:
+            logger.error(f"Error processing VoIP conversational turn for Call [{call_id}]: {e}", exc_info=True)
+        finally:
+            session.processing_turn = False
+
+    async def ensure_pcm_filler(self, bot_name: str = "عمر", gender: str = "male") -> str:
+        """Task B3.f: Pre-renders and caches 48kHz stereo raw PCM filler ('ممم... ثانية يا غالي') in artifacts/voice_notes."""
+        prefix = "female" if gender.lower() == "female" else "male"
+        raw_path = os.path.abspath(os.path.join(os.getcwd(), "artifacts", "voice_notes", f"call_filler_{prefix}.raw"))
+        if os.path.exists(raw_path) and os.path.getsize(raw_path) > 3000:
+            return raw_path
+
+        try:
+            from aether_human_core.multimodal_engine.acoustic_voice.realistic_voice_generator import synthesize_voice
+            filler_text = "ممم... ثانية يا غالي" if prefix == "female" else "ممم... ثانية يا باشا"
+            ogg_path, _, _ = await synthesize_voice(
+                text=filler_text,
+                persona=bot_name,
+                mode="call",
+            )
+            if ogg_path and os.path.exists(ogg_path):
+                cmd = ["ffmpeg", "-y", "-i", ogg_path, "-ar", "48000", "-ac", "2", "-f", "s16le", raw_path]
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await proc.communicate()
+                if os.path.exists(raw_path) and os.path.getsize(raw_path) > 3000:
+                    logger.info(f"🎙️ [VoIP Pipeline] Pre-rendered filler PCM: {raw_path}")
+                    return raw_path
+        except Exception as filler_err:
+            logger.debug(f"Failed to pre-render filler PCM: {filler_err}")
+        return raw_path
+
+    async def ensure_pcm_greeting(self, bot_name: str = "عمر", gender: str = "male") -> str:
+        """Ensures that appropriate hyper-realistic human raw PCM greeting exists in artifacts/voice_notes."""
+        os.makedirs(os.path.join(os.getcwd(), "artifacts", "voice_notes"), exist_ok=True)
+        prefix = "female" if gender.lower() == "female" else "male"
+        raw_path = os.path.abspath(os.path.join(os.getcwd(), "artifacts", "voice_notes", f"call_greeting_{prefix}.raw"))
+        if os.path.exists(raw_path) and os.path.getsize(raw_path) > 10000:
+            return raw_path
+
+        try:
+            from aether_human_core.multimodal_engine.acoustic_voice.realistic_voice_generator import voice_generator
+            if prefix == "female":
+                greeting_text = "ألو، أيوة معاك وسامعاك أهو، منورني يا غالي، قوللي إيه الأخبار؟"
+            else:
+                greeting_text = "ألو، أيوة يا باشا معاك وسامعك أهو، منورني والله، قوللي إيه الأخبار؟"
+
+            ogg_path, _, _ = await voice_generator.generate_voice_note(
+                text_content=greeting_text,
+                emotional_tone="WARM",
+                dialect_code="egyptian",
+                gender=prefix,
+                is_voip=True,
+                bot_name=bot_name,
+            )
+            if ogg_path and os.path.exists(ogg_path):
+                cmd = ["ffmpeg", "-y", "-i", ogg_path, "-ar", "48000", "-ac", "2", "-f", "s16le", raw_path]
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await proc.communicate()
+                if os.path.exists(raw_path) and os.path.getsize(raw_path) > 10000:
+                    logger.info(f"🎙️ [VoIP Pipeline] Synthesized fresh hyper-realistic PCM greeting: {raw_path}")
+                    return raw_path
+        except Exception as gen_err:
+            logger.warning(f"Failed to auto-generate greeting PCM: {gen_err}")
+
+        legacy_raw = os.path.abspath(os.path.join(os.getcwd(), "artifacts", "voice_notes", "default_call_greeting.raw"))
+        return legacy_raw if os.path.exists(legacy_raw) else raw_path
+
+
+
+    async def prewarm_greeting_for_bot(
+
+        self, bot_name: str = "عمر", gender: str = "male", dialect: str = "egyptian"
+
+    ) -> List[bytes]:
+
+        """Pre-warms and caches authentic 20ms Opus frames in memory (<1.5s latency)."""
+
+        key = f"{bot_name}_{gender}_{dialect}"
+
+        if key in self._persona_greeting_cache and self._persona_greeting_cache[key]:
+
+            return self._persona_greeting_cache[key]
+
+
+
+        try:
+
+            from aether_human_core.multimodal_engine.acoustic_voice.realistic_voice_generator import voice_generator
+
+            greeting_text = (
+
+                f"ألوو يا هلا بيك، سامعاك ومنور الدنيا كلها، أؤمرني يا غالي!"
+
+                if gender.lower() == "female" else
+
+                f"ألووو يا باشا، منور والله وسامعك أهو، قول أؤمرني يا غالي!"
+
+            )
+
+            ogg_path, _, _ = await voice_generator.generate_voice_note(
+
+                text_content=greeting_text,
+
+                dialect_code=dialect,
+
+                gender=gender,
+
+            )
+
+            if ogg_path and os.path.exists(ogg_path):
+
+                with open(ogg_path, "rb") as f:
+
+                    data = f.read()
+
+                frames = extract_ogg_opus_frames(data)
+
+                if frames:
+
+                    self._persona_greeting_cache[key] = frames
+
+                    return frames
+
+        except Exception as e:
+
+            logger.debug(f"Greeting pre-warm notice: {e}")
+
+        return self._cached_greeting_frames
+
+
+
+    def select_backchannel(self, is_night_mode: bool = False) -> str:
+
+        """Picks a realistic vocal backchanneling cue to confirm attention."""
+
+        if is_night_mode:
+
+            return random.choice(self.NIGHT_WHISPER_FILLERS)
+
+        return random.choice(self.BACKCHANNEL_FILLERS)
+
+
+
+    async def handle_user_barge_in(self) -> None:
+
+        """Called when incoming user audio energy is detected while bot is speaking."""
+
+        if self.is_speaking:
+
+            logger.info("⚡ User Barge-In detected! Halting bot audio playback gracefully.")
+
+            self.interrupted = True
+
+            self.is_speaking = False
+
+
+
+    async def prepare_incoming_call(
+        self,
+        call_id: int,
+        caller_id: int,
+        caller_name: str,
+        bot_name: str,
+        client: Any,
+        peer: Any,
+        dh_g: int,
+        dh_p: bytes,
+        dh_random: bytes,
+        g_a_hash: bytes,
+        incoming_proto: Any = None,
+    ) -> tuple[bytes, Any]:
+        """
+        Prepares incoming VoIP call with ntgcalls:
+        - Registers session and client
+        - Sets up instant greeting playback via MediaSource.FILE
+        - Computes g_b via ntgcalls.init_exchange
+        - Negotiates protocol with supported modern versions
+        """
+        import ntgcalls
+        from telethon import types
+
+        p_int = int.from_bytes(dh_p, "big") if dh_p else 0
+        b_bytes = os.urandom(256)
+        b_int = int.from_bytes(b_bytes, "big") % (p_int - 1) if p_int > 1 else 0
+
+        try:
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        session = ActiveVoIPSession(
+            call_id=call_id,
+            caller_id=caller_id,
+            caller_name=caller_name,
+            bot_name=bot_name,
+            peer=peer,
+            b_int=b_int,
+            p=p_int,
+            g=dh_g,
+        )
+        self._active_sessions[call_id] = session
+        self._client_instances[call_id] = client
+
+        # Resolve bot gender & matching PCM greeting
+        from bot_factory.factory_manager import bot_factory
+        bot_gender = "male"
+        for b in bot_factory.list_all_bots():
+            if b.name == bot_name or b.instance_id.startswith("userbot_"):
+                g_val = getattr(b, "gender", None)
+                if g_val and "female" in str(g_val).lower():
+                    bot_gender = "female"
+                break
+        raw_greeting_path = await self.ensure_pcm_greeting(bot_name, gender=bot_gender)
+
+        if self._ntgcalls:
+            try:
+                await self._ntgcalls.stop(call_id)
+            except Exception:
+                pass
+
+            await self._ntgcalls.create_p2p_call(call_id)
+
+            # 1. Outbound stream: Bot greeting
+            audio_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.FILE, 48000, 2, raw_greeting_path, False)
+            media_desc = ntgcalls.MediaDescription(microphone=audio_desc, speaker=None, camera=None, screen=None)
+            await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.CAPTURE, media_desc)
+            session.is_bot_speaking = True
+            session.bot_speech_start_time = time.time()
+            session.barge_in_consecutive_frames = 0
+
+            # 2. Inbound stream: Remote caller speech sink (routes to on_frames)
+            playback_audio = ntgcalls.AudioDescription(ntgcalls.MediaSource.EXTERNAL, 48000, 2, "", False)
+            playback_desc = ntgcalls.MediaDescription(microphone=playback_audio, speaker=playback_audio, camera=None, screen=None)
+            await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.PLAYBACK, playback_desc)
+            logger.info(
+                f"🎙️ [VoIP Pipeline] Bidirectional media sources initialized for Call [{call_id}]: "
+                f"CAPTURE(file={os.path.basename(raw_greeting_path)}), PLAYBACK(EXTERNAL)."
+            )
+
+            # 3. Greeting safety timer
+            greeting_dur = os.path.getsize(raw_greeting_path) / 192000.0 if os.path.exists(raw_greeting_path) else 5.0
+            async def _greeting_safety_reset(dur: float):
+                await asyncio.sleep(dur + 0.5)
+                s = self._active_sessions.get(call_id)
+                if s and s.is_bot_speaking:
+                    s.is_bot_speaking = False
+                    logger.info(f"⏱️ [VoIP Greeting Fallback] Cleared is_bot_speaking after {dur:.1f}s greeting.")
+            asyncio.create_task(_greeting_safety_reset(greeting_dur))
+
+            dh_cfg = ntgcalls.DhConfig(dh_g, dh_p, dh_random)
+            g_b = await self._ntgcalls.init_exchange(call_id, dh_cfg, g_a_hash)
+
+            ntg_proto = self._ntgcalls.get_protocol()
+            incoming_versions = list(getattr(incoming_proto, "library_versions", [])) if incoming_proto else []
+            selected_versions = [v for v in ntg_proto.library_versions if v in incoming_versions]
+            if not selected_versions:
+                selected_versions = list(ntg_proto.library_versions)
+
+            protocol = types.PhoneCallProtocol(
+                min_layer=ntg_proto.min_layer,
+                max_layer=ntg_proto.max_layer,
+                library_versions=selected_versions,
+                udp_p2p=True,
+                udp_reflector=True,
+            )
+            logger.info(
+                f"📞 [NTgCalls Protocol] min_layer={protocol.min_layer}, max_layer={protocol.max_layer}, "
+                f"versions={selected_versions}, g_b length={len(g_b)}"
+            )
+            return g_b, protocol
+        else:
+            g_b_fallback = pow(dh_g, b_int, p_int).to_bytes(256, "big")
+            protocol = types.PhoneCallProtocol(
+                min_layer=65,
+                max_layer=92,
+                library_versions=["2.7.7", "2.4.4", "8.0.0", "9.0.0", "12.0.0", "13.0.0"],
+                udp_p2p=True,
+                udp_reflector=True,
+            )
+            return g_b_fallback, protocol
+
+    def register_pending_call(
+        self,
+        call_id: int,
+        caller_id: int,
+        caller_name: str,
+        bot_name: str,
+        client: Any,
+        peer: Any,
+        b_int: int,
+        p: int,
+        g: int,
+        g_a_hash: bytes = b"",
+    ) -> ActiveVoIPSession:
+        """Registers pending VoIP call after AcceptCallRequest has been dispatched."""
+        try:
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+
+        session = ActiveVoIPSession(
+            call_id=call_id,
+            caller_id=caller_id,
+            caller_name=caller_name,
+            bot_name=bot_name,
+            peer=peer,
+            b_int=b_int,
+            p=p,
+            g=g,
+        )
+        self._active_sessions[call_id] = session
+        self._client_instances[call_id] = client
+        logger.info(f"Registered pending VoIP session [{call_id}] for [{caller_name} ({caller_id})].")
+        return session
+
+    async def handle_phone_call_connected(self, call: Any, client: Optional[Any] = None) -> None:
+        """
+        Invoked when Telegram confirms the call connection (types.PhoneCall).
+        Derives auth key, performs WebRTC key exchange and P2P connection via ntgcalls,
+        and launches live duplex audio streaming.
+        """
+        import hashlib
+        import struct
+
+        call_id = getattr(call, "id", 0)
+        session = self._active_sessions.get(call_id)
+        if not session:
+            logger.warning(f"PhoneCall connected for unknown or expired session [{call_id}].")
+            return
+
+        if client:
+            self._client_instances[call_id] = client
+
+        # 1. Compute shared Diffie-Hellman auth key if g_a_or_b is provided
+        g_a_or_b = getattr(call, "g_a_or_b", None)
+        if g_a_or_b and session.p > 0 and session.b_int > 0:
+            try:
+                g_a_int = int.from_bytes(g_a_or_b, "big")
+                auth_key_int = pow(g_a_int, session.b_int, session.p)
+                session.auth_key = auth_key_int.to_bytes(256, "big")
+
+                # Check fingerprint alignment with Telegram server
+                computed_fp = struct.unpack("<q", hashlib.sha1(session.auth_key).digest()[-8:])[0]
+                expected_fp = getattr(call, "key_fingerprint", None)
+                fp_matches = (computed_fp == expected_fp)
+                logger.info(f"🔑 Diffie-Hellman Auth Key derived for Call [{call_id}] (Fingerprint Match: {fp_matches}).")
+            except Exception as dh_ex:
+                logger.warning(f"Error computing DH auth key: {dh_ex}")
+
+        # 2. NTgCalls WebRTC connection handshake
+        if self._ntgcalls:
+            import ntgcalls
+            try:
+                if getattr(call, "g_a_or_b", None) and getattr(call, "key_fingerprint", None):
+                    await self._ntgcalls.exchange_keys(call_id, call.g_a_or_b, call.key_fingerprint)
+                    logger.info(f"🔑 [NTgCalls] Keys exchanged successfully for Call [{call_id}].")
+                elif session.auth_key:
+                    await self._ntgcalls.skip_exchange(call_id, session.auth_key, False)
+                    logger.info(f"🔑 [NTgCalls] Skip exchange with derived auth key for Call [{call_id}].")
+            except Exception as ex:
+                logger.warning(f"exchange_keys notice: {ex}. Using skip_exchange fallback...")
+                if session.auth_key:
+                    try:
+                        await self._ntgcalls.skip_exchange(call_id, session.auth_key, False)
+                    except Exception as sk_ex:
+                        logger.warning(f"skip_exchange error: {sk_ex}")
+
+            connections = getattr(call, "connections", [])
+            rtc_servers = [
+                ntgcalls.RTCServer(
+                    c.id, c.ip, getattr(c, 'ipv6', '') or '', c.port,
+                    getattr(c, 'username', None), getattr(c, 'password', None),
+                    getattr(c, 'turn', False) or getattr(c, '__class__.__name__', '') != 'PhoneConnectionWebrtc',
+                    getattr(c, 'stun', False),
+                    getattr(c, 'tcp', False),
+                    getattr(c, 'peer_tag', None),
+                )
+                for c in connections
+            ]
+
+            proto_obj = getattr(call, "protocol", None)
+            versions = list(getattr(proto_obj, "library_versions", [])) if proto_obj else []
+            ntg_proto = self._ntgcalls.get_protocol()
+            supported_versions = [v for v in ntg_proto.library_versions if v in versions]
+            if not supported_versions:
+                supported_versions = list(ntg_proto.library_versions)
+
+            p2p_allowed = getattr(call, "p2p_allowed", True)
+            custom_params = getattr(getattr(call, "custom_parameters", None), "data", None)
+
+            try:
+                await self._ntgcalls.connect_p2p(
+                    call_id,
+                    rtc_servers,
+                    supported_versions,
+                    p2p_allowed,
+                    custom_params,
+                )
+                logger.info(f"🌐 [NTgCalls connect_p2p] Connected with {len(rtc_servers)} routes, versions={supported_versions}.")
+
+                # Re-verify and ensure PLAYBACK external sink is active
+                try:
+                    playback_audio = ntgcalls.AudioDescription(ntgcalls.MediaSource.EXTERNAL, 48000, 2, "", False)
+                    playback_desc = ntgcalls.MediaDescription(microphone=playback_audio, speaker=playback_audio, camera=None, screen=None)
+                    await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.PLAYBACK, playback_desc)
+                    logger.info(f"🎙️ [VoIP Pipeline] PLAYBACK external sink confirmed active for Call [{call_id}].")
+                except Exception as pb_ex:
+                    logger.debug(f"Notice confirming PLAYBACK sink: {pb_ex}")
+
+                # Outbound stream: Bot greeting on live connected P2P call immediately!
+                try:
+                    from bot_factory.factory_manager import bot_factory
+                    p2p_bot_gender = "male"
+                    for b in bot_factory.list_all_bots():
+                        if b.name in (session.bot_name or "") or (session.bot_name or "") in b.name or b.instance_id.startswith("userbot_"):
+                            g_val = getattr(b, "gender", None)
+                            if g_val and "female" in str(g_val).lower():
+                                p2p_bot_gender = "female"
+                            break
+                    raw_greeting = await self.ensure_pcm_greeting(session.bot_name, gender=p2p_bot_gender)
+                    if os.path.exists(raw_greeting) and os.path.getsize(raw_greeting) > 10000:
+                        greeting_desc = ntgcalls.AudioDescription(ntgcalls.MediaSource.FILE, 48000, 2, raw_greeting, False)
+                        media_desc = ntgcalls.MediaDescription(microphone=greeting_desc, speaker=None, camera=None, screen=None)
+                        await self._ntgcalls.set_stream_sources(call_id, ntgcalls.StreamMode.CAPTURE, media_desc)
+                        session.is_bot_speaking = True
+                        session.bot_speech_start_time = time.time()
+                        session.barge_in_consecutive_frames = 0
+                        logger.info(f"🎙️ [VoIP Pipeline] Live greeting started on P2P connect for Call [{call_id}]: {os.path.basename(raw_greeting)}")
+                        greeting_dur = os.path.getsize(raw_greeting) / 192000.0
+                        async def _p2p_greeting_safety_reset(dur: float):
+                            await asyncio.sleep(dur + 0.5)
+                            s = self._active_sessions.get(call_id)
+                            if s and s.is_bot_speaking:
+                                s.is_bot_speaking = False
+                                logger.info(f"⏱️ [VoIP Greeting Fallback] Cleared is_bot_speaking after {dur:.1f}s P2P greeting.")
+                        asyncio.create_task(_p2p_greeting_safety_reset(greeting_dur))
+                except Exception as cap_ex:
+                    logger.warning(f"Notice starting P2P CAPTURE greeting: {cap_ex}")
+
+                return
+            except Exception as conn_err:
+                logger.error(f"NTgCalls connect_p2p error: {conn_err}")
+
+        # 3. Parallel UDP Reflector Keepalive Burst
+        existing_task = self._stream_tasks.get(call_id)
+        if existing_task and not existing_task.done():
+            return
+
+        connections = getattr(call, "connections", [])
+        if not connections:
+            logger.warning(f"No reflector connections found in PhoneCall [{call_id}].")
+            return
+
+        endpoints: List[Dict[str, Any]] = []
+        for idx, conn in enumerate(connections):
+            conn_ip = getattr(conn, "ip", "")
+            conn_port = getattr(conn, "port", 0)
+            conn_tag = getattr(conn, "peer_tag", b"")
+            conn_tcp = getattr(conn, "tcp", False)
+            tag_hex = conn_tag.hex() if isinstance(conn_tag, bytes) else str(conn_tag)
+            logger.info(f"🌐 Call [{call_id}] Route #{idx+1}: {conn_ip}:{conn_port} (TCP={conn_tcp}, Tag={tag_hex})")
+            if conn_ip and conn_port and conn_tag and not conn_tcp:
+                endpoints.append({"ip": conn_ip, "port": conn_port, "peer_tag": conn_tag})
+
+        if not endpoints:
+            for conn in connections:
+                c_ip = getattr(conn, "ip", "")
+                c_port = getattr(conn, "port", 0)
+                c_tag = getattr(conn, "peer_tag", b"")
+                if c_ip and c_port and c_tag:
+                    endpoints.append({"ip": c_ip, "port": c_port, "peer_tag": c_tag})
+
+        if not endpoints:
+            logger.warning(f"Could not parse valid reflector endpoints from PhoneCall [{call_id}].")
+            return
+
+        primary_conn = endpoints[0]
+        session.reflector_ip = primary_conn["ip"]
+        session.reflector_port = primary_conn["port"]
+        session.reflector_endpoints = endpoints
+
+        task = asyncio.create_task(
+            self._run_live_audio_stream(
+                session=session,
+                endpoints=endpoints,
+            )
+        )
+        self._stream_tasks[call_id] = task
+
+
+
+    async def _run_audio_receiver(self, session: ActiveVoIPSession, sock: socket.socket) -> None:
+
+        """
+
+        Receives incoming voice/signaling UDP packets from caller via Telegram reflector in real-time.
+
+        Decrypts caller data packets, updates received sequence number for roundtrip ACK,
+
+        and performs full-duplex energy monitoring and barge-in interruption detection.
+
+        """
+
+        import hashlib
+
+        import struct
+
+        from telethon.crypto import AES
+
+
+
+        loop = asyncio.get_running_loop()
+
+        pkt_count = 0
+
+        while session.is_active:
+
+            try:
+
+                data, addr = await loop.sock_recvfrom(sock, 2048)
+
+                if data:
+
+                    pkt_count += 1
+
+                    if not session.active_endpoint:
+
+                        session.active_endpoint = addr
+
+                        logger.info(f"🎯 [VoIP Active Path Locked] Callee locked active reflector endpoint to {addr}")
+
+                    if pkt_count == 1 or pkt_count % 50 == 0:
+
+                        logger.info(f"📥 [VoIP Reflector Inbound] Received packet #{pkt_count} ({len(data)} bytes) from {addr}")
+
+
+
+                    if len(data) >= 32 and session.auth_key:
+
+                        try:
+
+                            in_msg_key = data[16:32]
+
+                            in_encrypted = data[32:]
+
+                            # Incoming from caller to callee: x = 0
+
+                            x = 0
+
+                            sha256_a = hashlib.sha256(in_msg_key + session.auth_key[x : x + 36]).digest()
+
+                            sha256_b = hashlib.sha256(session.auth_key[x + 40 : x + 76] + in_msg_key).digest()
+
+                            aes_key = sha256_a[:8] + sha256_b[8:24] + sha256_a[24:32]
+
+                            aes_iv = sha256_b[:8] + sha256_a[8:24] + sha256_b[24:32]
+
+                            decrypted = AES.decrypt_ige(in_encrypted, aes_key, aes_iv)
+
+
+
+                            # Verify constructor decryptedDataBlock#dbf948c1
+
+                            if len(decrypted) >= 44 and decrypted[:4] == struct.pack("<I", 0xdbf948c1):
+
+                                caller_out_seq = struct.unpack("<I", decrypted[40:44])[0]
+
+                                if caller_out_seq > session.last_received_seq:
+
+                                    session.last_received_seq = caller_out_seq
+
+                                    logger.info(f"📥 Acknowledged Caller VoIP Packet Seq #{caller_out_seq} from {addr}")
+
+                        except Exception as dec_err:
+
+                            logger.debug(f"Packet decryption notice: {dec_err}")
+
+
+
+                    if len(data) > 32:
+
+                        self.is_user_speaking = True
+
+                        if self.is_speaking:
+
+                            logger.info("⚡ Caller speech activity detected via VoIP reflector! Halting bot audio for barge-in.")
+
+                            await self.handle_user_barge_in()
+
+            except asyncio.CancelledError:
+
+                break
+
+            except Exception as rx_err:
+
+                logger.debug(f"UDP sock_recvfrom loop notice: {rx_err}")
+
+                await asyncio.sleep(0.02)
+
+
+
+    async def _run_reflector_keepalive(
+
+        self, session: ActiveVoIPSession, sock: socket.socket, endpoints: List[Dict[str, Any]]
+
+    ) -> None:
+
+        """
+
+        Continuous 500ms reflector keepalive loop.
+
+        Sends authenticated keepalive silence packets to candidate reflector endpoints.
+
+        This triggers Telegram's relay reflector to immediately recognize the callee
+
+        and switch caller state from 'Connecting' (يتم الوصل) to '00:01' (Connected)!
+
+        """
+
+        loop = asyncio.get_running_loop()
+
+        silence_frame = b"\xf8\xff\xfe"
+
+        while session.is_active:
+
+            try:
+
+                # Target active locked endpoint if known, else ping all candidates
+
+                targets = [ep for ep in endpoints if (ep["ip"], ep["port"]) == session.active_endpoint] if session.active_endpoint else endpoints
+
+                for ep in targets:
+
+                    dest = (ep["ip"], ep["port"])
+
+                    tag = ep["peer_tag"]
+
+
+
+                    if session.auth_key:
+
+                        session.out_seq_counter += 1
+
+                        seq_pkt = build_voip_packet(
+
+                            session.auth_key,
+
+                            tag,
+
+                            silence_frame,
+
+                            session.out_seq_counter,
+
+                            session.last_received_seq,
+
+                        )
+
+                        try:
+
+                            await loop.sock_sendto(sock, seq_pkt, dest)
+
+                        except Exception as send_err:
+
+                            logger.debug(f"Keepalive sendto {dest} notice: {send_err}")
+
+            except asyncio.CancelledError:
+
+                break
+
+            except Exception as e:
+
+                logger.debug(f"Reflector keepalive ping exception: {e}")
+
+            await asyncio.sleep(0.5)
+
+
+
+    async def _run_live_audio_stream(
+
+        self,
+
+        session: ActiveVoIPSession,
+
+        endpoints: List[Dict[str, Any]],
+
+    ) -> None:
+
+        """
+
+        Transmits live synthesized speech frames directly over Telegram VoIP reflector socket.
+
+        Uses instant pre-cached greeting playback (0.0s latency) so caller never waits on 'Connecting...'.
+
+        Maintains continuous 500ms keep-alive reflector loop & 20ms audio stream to keep caller timer ticking.
+
+        """
+
+        call_id = session.call_id
+
+        client = self._client_instances.get(call_id)
+
+
+
+        primary_ep = endpoints[0]
+
+        ip = primary_ep["ip"]
+
+        port = primary_ep["port"]
+
+        peer_tag = primary_ep["peer_tag"]
+
+
+
+        # 1. Create non-blocking UDP socket explicitly bound for Windows asyncio support
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        try:
+
+            sock.bind(("0.0.0.0", 0))
+
+        except Exception as be:
+
+            logger.debug(f"Socket bind notice: {be}")
+
+
+
+        # Disable SIO_UDP_CONNRESET on Windows so ICMP Port Unreachable does not crash async recvfrom
+
+        if os.name == "nt":
+
+            try:
+
+                import ctypes
+
+                in_val = ctypes.c_ulong(0)
+
+                out_val = ctypes.c_ulong(0)
+
+                ctypes.windll.ws2_32.WSAIoctl(
+
+                    sock.fileno(),
+
+                    0x9800000C,  # SIO_UDP_CONNRESET
+
+                    ctypes.byref(in_val),
+
+                    ctypes.sizeof(in_val),
+
+                    None,
+
+                    0,
+
+                    ctypes.byref(out_val),
+
+                    None,
+
+                    None,
+
+                )
+
+                logger.info(f"🛡️ Windows SIO_UDP_CONNRESET fix applied to Call [{call_id}] socket.")
+
+            except Exception as ioctl_err:
+
+                logger.warning(f"Failed to apply SIO_UDP_CONNRESET: {ioctl_err}")
+
+
+
+        sock.setblocking(False)
+
+        self._udp_sockets[call_id] = sock
+
+
+
+        # 2. Spawn concurrent receiver task and continuous 500ms reflector keepalive
+
+        recv_task = asyncio.create_task(self._run_audio_receiver(session, sock))
+
+        self._receiver_tasks[call_id] = recv_task
+
+
+
+        keepalive_task = asyncio.create_task(self._run_reflector_keepalive(session, sock, endpoints))
+
+
+
+        loop = asyncio.get_running_loop()
+
+
+
+        try:
+
+            # 3. Immediately punch NAT hole on ALL reflectors with initial 5-packet burst at 10ms intervals
+
+            silence_frame = b"\xf8\xff\xfe"
+
+            for ep in endpoints:
+
+                d = (ep["ip"], ep["port"])
+
+                t = ep["peer_tag"]
+
+                for _ in range(5):
+
+                    session.out_seq_counter += 1
+
+                    init_packet = build_voip_packet(session.auth_key, t, silence_frame, session.out_seq_counter, session.last_received_seq)
+
+                    try:
+
+                        await loop.sock_sendto(sock, init_packet, d)
+
+                    except Exception as burst_err:
+
+                        logger.debug(f"Burst send notice: {burst_err}")
+
+                    await asyncio.sleep(0.01)
+
+
+
+            # 4. Instant Greeting Playback: Load pre-cached Opus frames (0.0s delay!)
+
+            female_keywords = ["ريمي", "reemy", "ماسه", "ماس", "مريم", "نور", "سارة", "ليلى", "هند"]
+            is_fem = any(f in (session.bot_name or "").lower() for f in female_keywords)
+            gender_key = "female" if is_fem else "male"
+            frames = list(self._persona_greeting_cache.get(gender_key) or self._persona_greeting_cache.get("female" if is_fem else "male") or self._cached_greeting_frames)
+            greeting_text = (
+                "ألو.. أهلاً بيك يا غالي، أنا سامعاك أهو ومنورني جداً، قوللي سامعني كويس؟"
+                if is_fem
+                else "ألو.. منور يا صاحبي، سامعك أهو ومركز معاك، قوللي أؤمرني يا غالي سامعني؟"
+            )
+
+
+
+            session.is_stream_open = True
+
+            session.is_active = True
+
+            session.greeting_sent = True
+
+            self.is_speaking = True
+
+            self.interrupted = False
+
+
+
+            logger.info(
+
+                f"🎙️ Live Full-Duplex VoIP audio stream active for Call [{call_id}] across {len(endpoints)} routes. "
+
+                f"Transmitting {len(frames)} instant 20ms Opus frames | Spoken: '{greeting_text}'"
+
+            )
+
+
+
+            from admin_telemetry_and_archiver.live_event_streamer import live_event_streamer
+
+            await live_event_streamer.stream_voip_event(
+
+                caller_name=session.caller_name,
+
+                caller_id=session.caller_id,
+
+                call_type="AUDIO_CALL_LIVE",
+
+                action="CALL_ANSWERED_DUPLEX",
+
+                summary=f"تم فتح قناة الصوت الحية (Full-Duplex) وبث الترحيب الفوري مع {session.bot_name}: '{greeting_text}'",
+
+            )
+
+
+
+            # 5. Stream greeting frames at standard 20ms audio cadence
+
+            for frame in frames:
+
+                if not session.is_active or self.interrupted:
+
+                    break
+
+                session.out_seq_counter += 1
+
+                if session.active_endpoint:
+
+                    ep_tag = peer_tag
+
+                    for ep in endpoints:
+
+                        if (ep["ip"], ep["port"]) == session.active_endpoint:
+
+                            ep_tag = ep["peer_tag"]
+
+                            break
+
+                    packet = build_voip_packet(
+
+                        session.auth_key,
+
+                        ep_tag,
+
+                        frame,
+
+                        session.out_seq_counter,
+
+                        session.last_received_seq,
+
+                    )
+
+                    try:
+
+                        await loop.sock_sendto(sock, packet, session.active_endpoint)
+
+                    except Exception:
+
+                        pass
+
+                else:
+
+                    for ep in endpoints:
+
+                        d = (ep["ip"], ep["port"])
+
+                        t = ep["peer_tag"]
+
+                        packet = build_voip_packet(
+
+                            session.auth_key,
+
+                            t,
+
+                            frame,
+
+                            session.out_seq_counter,
+
+                            session.last_received_seq,
+
+                        )
+
+                        try:
+
+                            await loop.sock_sendto(sock, packet, d)
+
+                        except Exception:
+
+                            pass
+
+                await asyncio.sleep(0.02)
+
+
+
+            self.is_speaking = False
+
+
+
+            # 6. Continuous Keep-Alive & Full-Duplex Listening Loop
+
+            # Keep sending 20ms silence/comfort noise frames so caller's mobile timer keeps ticking!
+
+            while session.is_active:
+
+                await asyncio.sleep(0.02)
+
+                if not session.is_active:
+
+                    break
+
+                if not self.is_speaking:
+
+                    session.out_seq_counter += 1
+
+                    if session.active_endpoint:
+
+                        ep_tag = peer_tag
+
+                        for ep in endpoints:
+
+                            if (ep["ip"], ep["port"]) == session.active_endpoint:
+
+                                ep_tag = ep["peer_tag"]
+
+                                break
+
+                        silence_pkt = build_voip_packet(
+
+                            session.auth_key,
+
+                            ep_tag,
+
+                            silence_frame,
+
+                            session.out_seq_counter,
+
+                            session.last_received_seq,
+
+                        )
+
+                        try:
+
+                            await loop.sock_sendto(sock, silence_pkt, session.active_endpoint)
+
+                        except Exception:
+
+                            break
+
+                    else:
+
+                        for ep in endpoints:
+
+                            d = (ep["ip"], ep["port"])
+
+                            t = ep["peer_tag"]
+
+                            silence_pkt = build_voip_packet(
+
+                                session.auth_key,
+
+                                t,
+
+                                silence_frame,
+
+                                session.out_seq_counter,
+
+                                session.last_received_seq,
+
+                            )
+
+                            try:
+
+                                await loop.sock_sendto(sock, silence_pkt, d)
+
+                            except Exception:
+
+                                pass
+
+
+
+        except asyncio.CancelledError:
+
+            pass
+
+        except Exception as stream_err:
+
+            logger.error(f"Error during VoIP audio stream for call [{call_id}]: {stream_err}")
+
+            from admin_telemetry_and_archiver.live_event_streamer import live_event_streamer
+
+            await live_event_streamer.stream_voip_event(
+
+                caller_name=session.caller_name,
+
+                caller_id=session.caller_id,
+
+                call_type="AUDIO_CALL_LIVE",
+
+                action="CALL_STREAM_ERROR",
+
+                summary=f"تعثر بث الصوت الحي داخل المكالمة: {stream_err}",
+
+            )
+
+        finally:
+
+            self.is_speaking = False
+
+            recv = self._receiver_tasks.pop(call_id, None)
+
+            if recv and not recv.done():
+
+                recv.cancel()
+
+            try:
+
+                sock.close()
+
+            except Exception:
+
+                pass
+
+            self._udp_sockets.pop(call_id, None)
+
+
+
+    async def handle_signaling_data(self, phone_call_id: int, data: bytes) -> None:
+        """Delivers inbound WebRTC signaling data (SDP offer, ICE candidates) to ntgcalls core."""
+        try:
+            self._main_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        logger.info(f"📡 [SignalingData Received] Call [{phone_call_id}] ({len(data)} bytes)")
+        if self._ntgcalls:
+            try:
+                await self._ntgcalls.send_signaling_data(phone_call_id, data)
+                logger.info(f"✅ [NTgCalls] Inbound signaling data delivered for Call [{phone_call_id}].")
+            except Exception as sig_err:
+                logger.debug(f"send_signaling_data notice: {sig_err}")
+
+    async def handle_phone_call_ended(self, call_id: int) -> None:
+        """Concludes active live call session, cleans up resources, and dispatches authentic follow-up voice note to caller DM."""
+        if self._ntgcalls:
+            try:
+                await self._ntgcalls.stop(call_id)
+                logger.info(f"🛑 [NTgCalls] Call [{call_id}] stopped cleanly.")
+            except Exception as stop_err:
+                logger.debug(f"NTgCalls stop error for [{call_id}]: {stop_err}")
+
+        session = self._active_sessions.pop(call_id, None)
+
+        task = self._stream_tasks.pop(call_id, None)
+
+        if task and not task.done():
+
+            task.cancel()
+
+
+
+        recv_task = self._receiver_tasks.pop(call_id, None)
+
+        if recv_task and not recv_task.done():
+
+            recv_task.cancel()
+
+
+
+        sock = self._udp_sockets.pop(call_id, None)
+
+        if sock:
+
+            try:
+
+                sock.close()
+
+            except Exception:
+
+                pass
+
+
+
+        client = self._client_instances.pop(call_id, None)
+
+
+
+        if session:
+
+            session.is_active = False
+
+            session.duration_sec = time.time() - session.start_time
+
+            logger.info(
+
+                f"📞 VoIP session [{call_id}] ended with [{session.caller_name}]. "
+
+                f"Total duration: {session.duration_sec:.1f}s."
+
+            )
+
+
+
+                        # Check if the call was successful (connected and lasted >= 10s or had conversational turns)
+            was_successful = (session.duration_sec >= 10.0 or session.turns_count > 0)
+
+            # Only dispatch apology fallback voice note if the call failed or dropped prematurely (<10s and 0 turns)
+            if client and session.caller_id and not was_successful:
+                logger.info(
+                    f"📞 VoIP session [{call_id}] failed or dropped early ({session.duration_sec:.1f}s, {session.turns_count} turns). "
+                    f"Dispatching apology fallback voice note."
+                )
+                asyncio.create_task(self._send_call_ended_fallback_voice(client, session))
+            else:
+                logger.info(
+                    f"📞 VoIP session [{call_id}] completed successfully ({session.duration_sec:.1f}s, {session.turns_count} turns). "
+                    f"Skipping apology voice note."
+                )
+
+            from admin_telemetry_and_archiver.live_event_streamer import live_event_streamer
+            action_desc = "CALL_DISCONNECTED" if was_successful else "CALL_FAILED_OR_DROPPED"
+            summary_desc = (
+                f"انتهت المكالمة الصوتية بنجاح مع {session.caller_name}. المدة الإجمالية: {session.duration_sec:.1f} ثانية."
+                if was_successful
+                else f"انقطعت/فشلت المكالمة الصوتية مع {session.caller_name} بعد {session.duration_sec:.1f} ثانية. وتم إرسال فويس اعتذار."
+            )
+            asyncio.create_task(
+                live_event_streamer.stream_voip_event(
+                    caller_name=session.caller_name,
+                    caller_id=session.caller_id,
+                    call_type="AUDIO_CALL_LIVE",
+                    action=action_desc,
+                    summary=summary_desc,
+                )
+            )
+
+    async def _send_call_ended_fallback_voice(self, client: Any, session: ActiveVoIPSession) -> None:
+        """Sends an authentic human voice note to caller's DM when a call failed to connect or dropped prematurely."""
+        try:
+            from aether_human_core.multimodal_engine.acoustic_voice.realistic_voice_generator import realistic_voice_generator
+
+            bot_name = getattr(session, "bot_name", "Omar") or "Omar"
+            female_keywords = ["ريمي", "reemy", "ماسه", "ماسة", "ماس", "ملوكة", "ملوكه", "لوكا", "باتو", "نور", "سارة", "ليلى", "هند", "مريم", "female", "بنت", "أنثى"]
+            gender = "female" if any(f in bot_name.lower() for f in female_keywords) else "male"
+
+            if gender == "female":
+                voice_text = "ألو يا غالي.. معلش بجد الخط فصل فجأة، أنا سامعاك أهو في الفويس نوت، طمني كنت بتقول إيه؟"
+            else:
+                voice_text = "ألو يا صاحبي.. معلش بجد الخط قطع فجأة، سامعك أهو في الفويس نوت قوللي كنت عاوز إيه يا باشا؟"
+
+            voice_path = None
+            waveform_bytes = None
+            try:
+                voice_path, waveform_bytes, _ = await realistic_voice_generator.generate_voice_note(
+                    text_content=voice_text,
+                    emotional_tone="WARM",
+                    format_ext="ogg",
+                    dialect_code="egyptian",
+                    gender=gender,
+                    bot_name=bot_name,
+                )
+            except Exception as gen_err:
+                logger.warning(f"Failed to generate dynamic fallback voice note: {gen_err}")
+
+            if voice_path and os.path.exists(voice_path):
+                try:
+                    peer_entity = await client.get_input_entity(session.caller_id)
+                except Exception:
+                    peer_entity = session.caller_id
+
+                kwargs = {"voice_note": True}
+                if waveform_bytes:
+                    from telethon.tl.types import DocumentAttributeAudio
+                    kwargs["attributes"] = [DocumentAttributeAudio(voice=True, waveform=waveform_bytes)]
+
+                await client.send_file(
+                    peer_entity,
+                    voice_path,
+                    **kwargs,
+                )
+                logger.info(f"✅ Dispatched human follow-up voice note ({gender}) to caller [{session.caller_id}] in DM successfully.")
+        except Exception as ex:
+            logger.warning(f"Notice sending post-call voice note: {ex}")
+
+    def get_active_session(self, call_id: int) -> Optional[ActiveVoIPSession]:
+
+
+        return self._active_sessions.get(call_id)
+
+
+
+
+
+full_duplex_pipeline = FullDuplexAudioPipeline()
+
